@@ -11,18 +11,13 @@ export class WebhooksController {
   @Post('gitlab')
   async handleGitLabWebhook(
     @Body() payload: GitLabWebhookEvent,
-    @Headers('x-gitlab-token') gitlabToken: string,
     @Headers('x-gitlab-event') gitlabEvent: string,
-    @Query('fcmToken') fcmToken: string,
+    @Headers('x-fcm-token') fcmToken: string,
   ) {
-    this.logger.log(`Received GitLab webhook: ${gitlabEvent}`);
+    this.logger.log(`Received GitLab webhook: ${gitlabEvent || payload.object_kind}`);
 
     if (!fcmToken) {
-      throw new BadRequestException('Missing FCM token in query parameters');
-    }
-
-    if (!gitlabEvent) {
-      throw new BadRequestException('Missing GitLab event header');
+      throw new BadRequestException('Missing FCM token in X-FCM-Token header');
     }
 
     try {

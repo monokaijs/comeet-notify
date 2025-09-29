@@ -5,9 +5,6 @@ export default () => ({
     privateKey: process.env.FIREBASE_PRIVATE_KEY?.replace(/\\n/g, '\n'),
     clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
   },
-  gitlab: {
-    webhookSecret: process.env.GITLAB_WEBHOOK_SECRET,
-  },
   app: {
     environment: process.env.NODE_ENV || 'development',
     logLevel: process.env.LOG_LEVEL || 'info',
