@@ -12,10 +12,10 @@ RUN npm run build
 
 FROM node:20-alpine AS prod-stage
 
-COPY --from=build-stage /sms-otp/dist /sms-otp/dist
-COPY --from=build-stage /sms-otp/package.json /sms-otp/package.json
+COPY --from=build-stage /comeet-notify/dist /comeet-notify/dist
+COPY --from=build-stage /comeet-notify/package.json /comeet-notify/package.json
 
-WORKDIR /sms-otp
+WORKDIR /comeet-notify
 
 RUN npm install --production \
     && npm install -g pm2
