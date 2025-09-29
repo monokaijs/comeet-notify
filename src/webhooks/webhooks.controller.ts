@@ -2,6 +2,7 @@ import { Controller, Post, Body, Headers, BadRequestException, Logger, Query } f
 import { ApiTags, ApiOperation, ApiResponse, ApiBody, ApiHeader } from '@nestjs/swagger';
 import { WebhooksService } from './webhooks.service';
 import { GitLabWebhookEvent } from './dto/gitlab-webhook.dto';
+import { GitLabWebhookDto } from './dto/gitlab-webhook-swagger.dto';
 import { WebhookSuccessResponseDto, WebhookErrorResponseDto } from './dto/webhook-response.dto';
 
 @ApiTags('webhooks')
@@ -28,7 +29,7 @@ export class WebhooksController {
   })
   @ApiBody({
     description: 'GitLab webhook payload',
-    type: 'object',
+    type: GitLabWebhookDto,
     examples: {
       pushEvent: {
         summary: 'Push Event',
