@@ -20,14 +20,33 @@ export class WebhooksService {
     }
 
     try {
+      const fcmData: Record<string, string> = {
+        eventType: notificationData.eventType,
+        repositoryName: notificationData.repositoryName || '',
+        repositoryUrl: notificationData.repositoryUrl || '',
+        event_type: notificationData.deepLinkData.event_type,
+      };
+
+      if (notificationData.deepLinkData.project_id !== undefined) {
+        fcmData.project_id = String(notificationData.deepLinkData.project_id);
+      }
+      if (notificationData.deepLinkData.commit_sha) {
+        fcmData.commit_sha = notificationData.deepLinkData.commit_sha;
+      }
+      if (notificationData.deepLinkData.issue_iid !== undefined) {
+        fcmData.issue_iid = String(notificationData.deepLinkData.issue_iid);
+      }
+      if (notificationData.deepLinkData.merge_request_iid !== undefined) {
+        fcmData.merge_request_iid = String(notificationData.deepLinkData.merge_request_iid);
+      }
+      if (notificationData.deepLinkData.pipeline_id !== undefined) {
+        fcmData.pipeline_id = String(notificationData.deepLinkData.pipeline_id);
+      }
+
       const result = await this.fcmService.sendNotification(fcmToken, {
         title: notificationData.title,
         body: notificationData.message,
-        data: {
-          eventType: notificationData.eventType,
-          repositoryName: notificationData.repositoryName || '',
-          repositoryUrl: notificationData.repositoryUrl || '',
-        },
+        data: fcmData,
       });
 
       if (result.success) {

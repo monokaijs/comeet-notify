@@ -23,6 +23,14 @@ export interface ParsedNotificationData {
   message: string;
   repositoryName: string;
   repositoryUrl: string;
+  deepLinkData: {
+    event_type: string;
+    project_id?: number;
+    commit_sha?: string;
+    issue_iid?: number;
+    merge_request_iid?: number;
+    pipeline_id?: number;
+  };
 }
 
 @Injectable()
@@ -55,6 +63,11 @@ export class GitLabEventParserService {
       message: `${userName} pushed ${commitCount} commit${commitCount !== 1 ? 's' : ''} to ${branchName} in ${payload.project.name}`,
       repositoryName: payload.project.name,
       repositoryUrl: payload.project.web_url,
+      deepLinkData: {
+        event_type: 'push',
+        project_id: payload.project_id,
+        commit_sha: payload.checkout_sha,
+      },
     };
   }
 
@@ -94,6 +107,11 @@ export class GitLabEventParserService {
       message,
       repositoryName: payload.project.name,
       repositoryUrl: payload.project.web_url,
+      deepLinkData: {
+        event_type: 'merge_request',
+        project_id: payload.project.id,
+        merge_request_iid: mr.iid,
+      },
     };
   }
 
@@ -133,6 +151,11 @@ export class GitLabEventParserService {
       message,
       repositoryName: payload.project.name,
       repositoryUrl: payload.project.web_url,
+      deepLinkData: {
+        event_type: 'issue',
+        project_id: payload.project.id,
+        issue_iid: issue.iid,
+      },
     };
   }
 
@@ -172,6 +195,11 @@ export class GitLabEventParserService {
       message,
       repositoryName: payload.project.name,
       repositoryUrl: payload.project.web_url,
+      deepLinkData: {
+        event_type: 'pipeline',
+        project_id: payload.project.id,
+        pipeline_id: pipeline.id,
+      },
     };
   }
 
@@ -185,6 +213,10 @@ export class GitLabEventParserService {
       message: `${userName} created tag ${tagName} in ${payload.project.name}`,
       repositoryName: payload.project.name,
       repositoryUrl: payload.project.web_url,
+      deepLinkData: {
+        event_type: 'tag_push',
+        project_id: payload.project_id,
+      },
     };
   }
 }
