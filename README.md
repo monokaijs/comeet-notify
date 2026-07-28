@@ -269,5 +269,4 @@ the application logs for the Firebase error reported during delivery.
 
 ## License
 
-This repository is currently marked `UNLICENSED`. No permission is granted for
-redistribution unless a separate license is provided.
+Comeet Notify is available under the [MIT License](LICENSE).
