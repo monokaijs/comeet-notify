@@ -1,7 +1,11 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import * as admin from 'firebase-admin';
-import { FcmNotificationData, FcmResponse } from './dto/fcm-notification.dto';
+import {
+  FcmNotificationData,
+  FcmResponse,
+  PipelineLiveActivityUpdate,
+} from './dto/fcm-notification.dto';
 
 @Injectable()
 export class FcmService implements OnModuleInit {
@@ -19,7 +23,9 @@ export class FcmService implements OnModuleInit {
     const clientEmail = this.configService.get<string>('firebase.clientEmail');
 
     if (!projectId || !privateKey || !clientEmail) {
-      this.logger.warn('Firebase configuration is incomplete. FCM service will not be available.');
+      this.logger.warn(
+        'Firebase configuration is incomplete. FCM service will not be available.',
+      );
       return;
     }
 
@@ -37,7 +43,10 @@ export class FcmService implements OnModuleInit {
     }
   }
 
-  async sendNotification(fcmToken: string, notification: FcmNotificationData): Promise<FcmResponse> {
+  async sendNotification(
+    fcmToken: string,
+    notification: FcmNotificationData,
+  ): Promise<FcmResponse> {
     if (!admin.apps.length) {
       this.logger.error('Firebase Admin SDK not initialized');
       return { success: false, error: 'Firebase not initialized' };
@@ -73,21 +82,68 @@ export class FcmService implements OnModuleInit {
 
       const response = await admin.messaging().send(message);
       this.logger.log(`FCM notification sent successfully: ${response}`);
-      
+
       return { success: true, messageId: response };
     } catch (error) {
-      this.logger.error(`Failed to send FCM notification: ${error.message}`, error.stack);
-      
+      this.logger.error(
+        `Failed to send FCM notification: ${error.message}`,
+        error.stack,
+      );
+
       if (error.code === 'messaging/registration-token-not-registered') {
         return { success: false, error: 'Invalid FCM token' };
       }
-      
+
       return { success: false, error: error.message };
     }
   }
 
-  async sendNotificationToMultiple(fcmTokens: string[], notification: FcmNotificationData): Promise<FcmResponse[]> {
-    const promises = fcmTokens.map(token => this.sendNotification(token, notification));
+  async sendLiveActivity(
+    fcmToken: string,
+    liveActivityToken: string,
+    update: PipelineLiveActivityUpdate,
+  ): Promise<FcmResponse> {
+    if (!admin.apps.length) {
+      this.logger.error('Firebase Admin SDK not initialized');
+      return { success: false, error: 'Firebase not initialized' };
+    }
+
+    const aps: admin.messaging.Aps = {
+      timestamp: update.timestamp,
+      event: update.event,
+      'content-state': update.contentState,
+    };
+    if (update.staleDate !== undefined) aps['stale-date'] = update.staleDate;
+    if (update.dismissalDate !== undefined)
+      aps['dismissal-date'] = update.dismissalDate;
+
+    try {
+      const response = await admin.messaging().send({
+        token: fcmToken,
+        apns: {
+          liveActivityToken,
+          headers: {
+            'apns-priority': '10',
+          },
+          payload: { aps },
+        },
+      });
+      this.logger.log(`Live Activity update sent successfully: ${response}`);
+      return { success: true, messageId: response };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.logger.error(`Failed to send Live Activity update: ${message}`);
+      return { success: false, error: message };
+    }
+  }
+
+  async sendNotificationToMultiple(
+    fcmTokens: string[],
+    notification: FcmNotificationData,
+  ): Promise<FcmResponse[]> {
+    const promises = fcmTokens.map((token) =>
+      this.sendNotification(token, notification),
+    );
     return Promise.all(promises);
   }
 
@@ -97,10 +153,13 @@ export class FcmService implements OnModuleInit {
     }
 
     try {
-      await admin.messaging().send({
-        token: fcmToken,
-        data: { test: 'true' },
-      }, true); // dry run
+      await admin.messaging().send(
+        {
+          token: fcmToken,
+          data: { test: 'true' },
+        },
+        true,
+      ); // dry run
       return true;
     } catch (error) {
       this.logger.warn(`Invalid FCM token: ${error.message}`);

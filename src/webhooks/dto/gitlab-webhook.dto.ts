@@ -163,7 +163,14 @@ export interface GitLabPipelineEvent {
   user: GitLabUser;
   project: GitLabProject;
   commit: GitLabCommit;
-  builds: any[];
+  builds: GitLabPipelineBuild[];
+}
+
+export interface GitLabPipelineBuild {
+  id: number;
+  name: string;
+  stage: string;
+  status: string;
 }
 
 export interface GitLabTagPushEvent {

@@ -1,9 +1,26 @@
-import { Controller, Post, Body, Headers, BadRequestException, Logger, Query } from '@nestjs/common';
-import { ApiTags, ApiOperation, ApiResponse, ApiBody, ApiHeader } from '@nestjs/swagger';
+import {
+  Controller,
+  Post,
+  Body,
+  Headers,
+  BadRequestException,
+  Logger,
+  Query,
+} from '@nestjs/common';
+import {
+  ApiTags,
+  ApiOperation,
+  ApiResponse,
+  ApiBody,
+  ApiHeader,
+} from '@nestjs/swagger';
 import { WebhooksService } from './webhooks.service';
 import { GitLabWebhookEvent } from './dto/gitlab-webhook.dto';
 import { GitLabWebhookDto } from './dto/gitlab-webhook-swagger.dto';
-import { WebhookSuccessResponseDto, WebhookErrorResponseDto } from './dto/webhook-response.dto';
+import {
+  WebhookSuccessResponseDto,
+  WebhookErrorResponseDto,
+} from './dto/webhook-response.dto';
 
 @ApiTags('webhooks')
 @Controller('webhooks')
@@ -15,17 +32,28 @@ export class WebhooksController {
   @Post('gitlab')
   @ApiOperation({
     summary: 'Handle GitLab webhook events',
-    description: 'Processes GitLab webhook events and sends push notifications to the specified FCM token'
+    description:
+      'Processes GitLab webhook events and sends push notifications to the specified FCM token',
   })
   @ApiHeader({
     name: 'x-gitlab-event',
     description: 'GitLab event type (e.g., Push Hook, Merge Request Hook)',
-    required: false
+    required: false,
+  })
+  @ApiHeader({
+    name: 'x-live-activity-token',
+    description: 'Optional ActivityKit push token for remote pipeline updates',
+    required: false,
+  })
+  @ApiHeader({
+    name: 'x-live-activity-pipeline-id',
+    description: 'Pipeline ID associated with the ActivityKit push token',
+    required: false,
   })
   @ApiHeader({
     name: 'x-fcm-token',
     description: 'Firebase Cloud Messaging token for push notifications',
-    required: true
+    required: true,
   })
   @ApiBody({
     description: 'GitLab webhook payload',
@@ -43,9 +71,9 @@ export class WebhooksController {
           project: {
             id: 15,
             name: 'example-project',
-            web_url: 'https://gitlab.example.com/group/project'
-          }
-        }
+            web_url: 'https://gitlab.example.com/group/project',
+          },
+        },
       },
       mergeRequestEvent: {
         summary: 'Merge Request Event',
@@ -53,49 +81,59 @@ export class WebhooksController {
           object_kind: 'merge_request',
           user: {
             name: 'John Doe',
-            username: 'johndoe'
+            username: 'johndoe',
           },
           project: {
             id: 15,
             name: 'example-project',
-            web_url: 'https://gitlab.example.com/group/project'
+            web_url: 'https://gitlab.example.com/group/project',
           },
           object_attributes: {
             id: 99,
             title: 'MS-Viewport',
             state: 'opened',
-            action: 'open'
-          }
-        }
-      }
-    }
+            action: 'open',
+          },
+        },
+      },
+    },
   })
   @ApiResponse({
     status: 200,
     description: 'Webhook processed successfully',
-    type: WebhookSuccessResponseDto
+    type: WebhookSuccessResponseDto,
   })
   @ApiResponse({
     status: 400,
     description: 'Bad request - Missing FCM token or invalid payload',
-    type: WebhookErrorResponseDto
+    type: WebhookErrorResponseDto,
   })
   async handleGitLabWebhook(
     @Body() payload: GitLabWebhookEvent,
     @Headers('x-gitlab-event') gitlabEvent: string,
     @Headers('x-fcm-token') fcmToken: string,
+    @Headers('x-live-activity-token') liveActivityToken?: string,
+    @Headers('x-live-activity-pipeline-id') liveActivityPipelineId?: string,
   ) {
-    this.logger.log(`Received GitLab webhook: ${gitlabEvent || payload.object_kind}`);
+    this.logger.log(
+      `Received GitLab webhook: ${gitlabEvent || payload.object_kind}`,
+    );
 
     if (!fcmToken) {
       throw new BadRequestException('Missing FCM token in X-FCM-Token header');
     }
 
     try {
-      await this.webhooksService.processWebhook(payload, fcmToken);
+      await this.webhooksService.processWebhook(payload, fcmToken, {
+        token: liveActivityToken,
+        pipelineId: liveActivityPipelineId,
+      });
       return { success: true, message: 'Notification sent successfully' };
     } catch (error) {
-      this.logger.error(`Error processing webhook: ${error.message}`, error.stack);
+      this.logger.error(
+        `Error processing webhook: ${error.message}`,
+        error.stack,
+      );
       throw new BadRequestException('Failed to process webhook');
     }
   }
