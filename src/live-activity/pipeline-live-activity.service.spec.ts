@@ -87,4 +87,23 @@ describe('PipelineLiveActivityService', () => {
     expect(update.contentState.stages).toHaveLength(6);
     expect(update.contentState.stages.map(({ name }) => name)).toContain('six');
   });
+
+  it('builds the ActivityKit remote-start attributes and initial state', () => {
+    const payload = makePipeline();
+    payload.object_attributes.status = 'running';
+
+    const start = service.buildStart(payload, new Date('2026-08-10T00:00:00Z'));
+
+    expect(start.event).toBe('start');
+    expect(start.attributesType).toBe('PipelineActivityAttributes');
+    expect(start.attributes).toEqual({
+      projectId: 7,
+      pipelineId: 42,
+      pipelineName: 'Comeet',
+      ref: 'main',
+      deepLink: 'comeet:///PipelineDetails?projectId=7&pipelineId=42',
+    });
+    expect(start.contentState.status).toBe('running');
+    expect(start.alert.title).toBe('Comeet build started');
+  });
 });

@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import {
   PipelineLiveActivityStage,
   PipelineLiveActivityStageStatus,
+  PipelineLiveActivityStart,
   PipelineLiveActivityUpdate,
 } from '../fcm/dto/fcm-notification.dto';
 import { FcmService } from '../fcm/fcm.service';
@@ -157,6 +158,37 @@ export class PipelineLiveActivityService {
     };
   }
 
+  buildStart(
+    payload: GitLabPipelineEvent,
+    now = new Date(),
+  ): PipelineLiveActivityStart {
+    const update = this.buildUpdate(payload, now);
+    const pipelineId = payload.object_attributes.id;
+    const projectId = payload.project.id;
+    return {
+      event: 'start',
+      timestamp: update.timestamp,
+      staleDate: update.staleDate ?? update.timestamp + 90,
+      contentState: update.contentState,
+      attributesType: 'PipelineActivityAttributes',
+      attributes: {
+        projectId,
+        pipelineId,
+        pipelineName: truncate(
+          payload.project.name || `Pipeline #${pipelineId}`,
+          80,
+        ),
+        ref: truncate(payload.object_attributes.ref || 'detached', 80),
+        deepLink: `comeet:///PipelineDetails?projectId=${projectId}&pipelineId=${pipelineId}`,
+      },
+      alert: {
+        title: `${payload.project.name} build started`,
+        body: `${payload.object_attributes.ref} · Pipeline #${pipelineId}`,
+        sound: 'default',
+      },
+    };
+  }
+
   async sendUpdate(
     payload: GitLabPipelineEvent,
     fcmToken: string,
@@ -166,6 +198,20 @@ export class PipelineLiveActivityService {
       fcmToken,
       liveActivityToken,
       this.buildUpdate(payload),
+    );
+  }
+
+  async sendStart(
+    payload: GitLabPipelineEvent,
+    fcmToken: string,
+    pushToStartToken: string,
+  ) {
+    const collapseId = `comeet-${payload.project.id}-${payload.object_attributes.id}`;
+    return this.fcmService.sendLiveActivity(
+      fcmToken,
+      pushToStartToken,
+      this.buildStart(payload),
+      collapseId,
     );
   }
 }

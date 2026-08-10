@@ -7,6 +7,7 @@ import { PipelineLiveActivityService } from '../live-activity/pipeline-live-acti
 interface LiveActivityHeaders {
   token?: string;
   pipelineId?: string;
+  pushToStartToken?: string;
 }
 
 const LIVE_ACTIVITY_TOKEN_PATTERN = /^[a-fA-F0-9]{32,512}$/;
@@ -63,16 +64,22 @@ export class WebhooksService {
         body: notificationData.message,
         data: fcmData,
       });
-      const liveActivityPromise = this.shouldUpdateLiveActivity(
-        payload,
-        liveActivity,
-      )
-        ? this.pipelineLiveActivityService.sendUpdate(
-            payload,
-            fcmToken,
-            liveActivity.token!,
-          )
-        : Promise.resolve(null);
+      let liveActivityPromise = Promise.resolve<Awaited<
+        ReturnType<PipelineLiveActivityService['sendUpdate']>
+      > | null>(null);
+      if (this.shouldUpdateLiveActivity(payload, liveActivity)) {
+        liveActivityPromise = this.pipelineLiveActivityService.sendUpdate(
+          payload,
+          fcmToken,
+          liveActivity.token!,
+        );
+      } else if (this.shouldStartLiveActivity(payload, liveActivity)) {
+        liveActivityPromise = this.pipelineLiveActivityService.sendStart(
+          payload,
+          fcmToken,
+          liveActivity.pushToStartToken!,
+        );
+      }
       const [result, liveActivityResult] = await Promise.all([
         notificationPromise,
         liveActivityPromise,
@@ -116,5 +123,18 @@ export class WebhooksService {
       return false;
     }
     return String(payload.object_attributes.id) === headers.pipelineId;
+  }
+
+  private shouldStartLiveActivity(
+    payload: GitLabWebhookEvent,
+    headers: LiveActivityHeaders,
+  ): payload is Extract<GitLabWebhookEvent, { object_kind: 'pipeline' }> {
+    if (payload.object_kind !== 'pipeline' || !headers.pushToStartToken)
+      return false;
+    if (!LIVE_ACTIVITY_TOKEN_PATTERN.test(headers.pushToStartToken)) {
+      this.logger.warn('Ignoring an invalid Live Activity push-to-start token');
+      return false;
+    }
+    return payload.object_attributes.status === 'running';
   }
 }

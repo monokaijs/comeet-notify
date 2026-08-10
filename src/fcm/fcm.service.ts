@@ -4,7 +4,7 @@ import * as admin from 'firebase-admin';
 import {
   FcmNotificationData,
   FcmResponse,
-  PipelineLiveActivityUpdate,
+  PipelineLiveActivityMessage,
 } from './dto/fcm-notification.dto';
 
 @Injectable()
@@ -101,7 +101,8 @@ export class FcmService implements OnModuleInit {
   async sendLiveActivity(
     fcmToken: string,
     liveActivityToken: string,
-    update: PipelineLiveActivityUpdate,
+    update: PipelineLiveActivityMessage,
+    collapseId?: string,
   ): Promise<FcmResponse> {
     if (!admin.apps.length) {
       this.logger.error('Firebase Admin SDK not initialized');
@@ -114,8 +115,13 @@ export class FcmService implements OnModuleInit {
       'content-state': update.contentState,
     };
     if (update.staleDate !== undefined) aps['stale-date'] = update.staleDate;
-    if (update.dismissalDate !== undefined)
+    if ('dismissalDate' in update && update.dismissalDate !== undefined)
       aps['dismissal-date'] = update.dismissalDate;
+    if (update.event === 'start') {
+      aps['attributes-type'] = update.attributesType;
+      aps.attributes = update.attributes;
+      aps.alert = update.alert;
+    }
 
     try {
       const response = await admin.messaging().send({
@@ -124,6 +130,7 @@ export class FcmService implements OnModuleInit {
           liveActivityToken,
           headers: {
             'apns-priority': '10',
+            ...(collapseId ? { 'apns-collapse-id': collapseId } : {}),
           },
           payload: { aps },
         },

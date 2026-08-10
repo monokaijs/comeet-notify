@@ -31,15 +31,17 @@ describe('WebhooksService Live Activity routing', () => {
   const sendUpdate = jest
     .fn()
     .mockResolvedValue({ success: false, error: 'expired token' });
+  const sendStart = jest.fn().mockResolvedValue({ success: true });
   const service = new WebhooksService(
     { parseEvent } as unknown as GitLabEventParserService,
     { sendNotification } as unknown as FcmService,
-    { sendUpdate } as unknown as PipelineLiveActivityService,
+    { sendUpdate, sendStart } as unknown as PipelineLiveActivityService,
   );
 
   beforeEach(() => {
     sendNotification.mockClear();
     sendUpdate.mockClear();
+    sendStart.mockClear();
   });
 
   it('routes a matching activity token without failing normal notification delivery', async () => {
@@ -64,5 +66,31 @@ describe('WebhooksService Live Activity routing', () => {
 
     expect(sendNotification).toHaveBeenCalledTimes(1);
     expect(sendUpdate).not.toHaveBeenCalled();
+  });
+
+  it('starts a running pipeline when only a push-to-start token is registered', async () => {
+    const pushToStartToken = 'c'.repeat(64);
+
+    await service.processWebhook(pipeline, 'fcm-token', {
+      pushToStartToken,
+    });
+
+    expect(sendStart).toHaveBeenCalledWith(
+      pipeline,
+      'fcm-token',
+      pushToStartToken,
+    );
+    expect(sendUpdate).not.toHaveBeenCalled();
+  });
+
+  it('prefers an existing pipeline update token over starting a duplicate activity', async () => {
+    await service.processWebhook(pipeline, 'fcm-token', {
+      token: 'd'.repeat(64),
+      pipelineId: '42',
+      pushToStartToken: 'e'.repeat(64),
+    });
+
+    expect(sendUpdate).toHaveBeenCalledTimes(1);
+    expect(sendStart).not.toHaveBeenCalled();
   });
 });

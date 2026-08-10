@@ -42,3 +42,27 @@ export interface PipelineLiveActivityUpdate {
   dismissalDate?: number;
   contentState: PipelineLiveActivityContentState;
 }
+
+export interface PipelineLiveActivityStart {
+  event: 'start';
+  timestamp: number;
+  staleDate: number;
+  contentState: PipelineLiveActivityContentState;
+  attributesType: 'PipelineActivityAttributes';
+  attributes: {
+    projectId: number;
+    pipelineId: number;
+    pipelineName: string;
+    ref: string;
+    deepLink: string;
+  };
+  alert: {
+    title: string;
+    body: string;
+    sound: 'default';
+  };
+}
+
+export type PipelineLiveActivityMessage =
+  | PipelineLiveActivityStart
+  | PipelineLiveActivityUpdate;
