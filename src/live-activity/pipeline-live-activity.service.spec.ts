@@ -56,7 +56,7 @@ describe('PipelineLiveActivityService', () => {
     });
   });
 
-  it('marks active updates stale after 90 seconds and limits the visible stepper', () => {
+  it('marks active updates stale after 15 minutes and limits the visible stepper', () => {
     const payload = makePipeline();
     payload.object_attributes.status = 'running';
     payload.object_attributes.stages = [
@@ -81,7 +81,7 @@ describe('PipelineLiveActivityService', () => {
     );
 
     expect(update.event).toBe('update');
-    expect(update.staleDate).toBe(1786320090);
+    expect(update.staleDate).toBe(1786320900);
     expect(update.dismissalDate).toBeUndefined();
     expect(update.contentState.currentStageName).toBe('six');
     expect(update.contentState.stages).toHaveLength(6);
@@ -95,15 +95,53 @@ describe('PipelineLiveActivityService', () => {
     const start = service.buildStart(payload, new Date('2026-08-10T00:00:00Z'));
 
     expect(start.event).toBe('start');
+    expect(start.inputPushToken).toBe(1);
     expect(start.attributesType).toBe('PipelineActivityAttributes');
     expect(start.attributes).toEqual({
       projectId: 7,
       pipelineId: 42,
       pipelineName: 'Comeet',
       ref: 'main',
-      deepLink: 'comeet:///PipelineDetails?projectId=7&pipelineId=42',
+      deepLink:
+        'comeet:///PipelineDetails?projectId=7&pipelineId=42&notificationSource=liveActivity',
     });
     expect(start.contentState.status).toBe('running');
     expect(start.alert.title).toBe('Comeet build started');
   });
+
+  it('includes the GitLab instance in remotely started activities', () => {
+    const payload = makePipeline();
+    payload.object_attributes.status = 'running';
+
+    const start = service.buildStart(
+      payload,
+      new Date('2026-08-10T00:00:00Z'),
+      'gitlab-work',
+    );
+
+    expect(start.attributes.instanceId).toBe('gitlab-work');
+    expect(start.attributes.deepLink).toBe(
+      'comeet:///PipelineDetails?projectId=7&pipelineId=42&instanceId=gitlab-work&notificationSource=liveActivity',
+    );
+  });
+
+  it.each(['manual', 'scheduled', 'canceling', 'waiting_for_callback'])(
+    'keeps a pipeline in %s state active',
+    (status) => {
+      const payload = makePipeline();
+      payload.object_attributes.status = status;
+
+      expect(service.buildUpdate(payload).event).toBe('update');
+    },
+  );
+
+  it.each(['success', 'failed', 'canceled', 'skipped'])(
+    'ends a pipeline in completed %s state',
+    (status) => {
+      const payload = makePipeline();
+      payload.object_attributes.status = status;
+
+      expect(service.buildUpdate(payload).event).toBe('end');
+    },
+  );
 });

@@ -2,8 +2,8 @@
 
 Self-hosted notification relay for the Comeet mobile app. Comeet Notify receives
 GitLab webhook events, turns them into concise mobile notifications, and delivers
-them through Firebase Cloud Messaging (FCM). Pipeline webhooks can also update
-an iOS Live Activity after the Comeet app starts one.
+them through Firebase Cloud Messaging (FCM). Pipeline webhooks can remotely
+start, update, and end iOS Live Activities.
 
 ```mermaid
 flowchart LR
@@ -19,7 +19,7 @@ flowchart LR
 - Supports push, merge request, issue, pipeline, and tag events
 - Sends native Android and iOS notifications through FCM
 - Includes project and event metadata for in-app deep links
-- Updates and ends pipeline Live Activities with stage, progress, and failure details
+- Updates and ends pipeline Live Activities with status snapshots and available stage details
 - Checks required delivery headers and provides structured errors and request logs
 - Ships with a multi-stage Docker image and PM2 runtime
 - Exposes interactive OpenAPI documentation with Swagger UI
@@ -116,20 +116,22 @@ The `X-GitLab-Event` header is read when GitLab includes it, but event handling
 is determined from the webhook payload. Each request must include exactly one
 target device token in `X-FCM-Token`.
 
-When Comeet starts a pipeline Live Activity, it updates the existing project
-webhook with two additional custom headers:
+Comeet stores the active pipeline registrations on the existing project webhook:
 
-| Header                        | Purpose                                            |
-| ----------------------------- | -------------------------------------------------- |
-| `X-Live-Activity-Token`       | ActivityKit push token for the activity            |
-| `X-Live-Activity-Pipeline-ID` | Pipeline allowed to use that activity-scoped token |
+| Header                                | Purpose                                                   |
+| ------------------------------------- | --------------------------------------------------------- |
+| `X-Comeet-Instance-ID`                | GitLab instance used for notification and activity links  |
+| `X-Live-Activity-Registrations`       | JSON list of pipeline IDs and ActivityKit update tokens   |
+| `X-Live-Activity-Token`               | Legacy single-activity token used during rolling upgrades |
+| `X-Live-Activity-Pipeline-ID`         | Pipeline associated with the legacy token                 |
+| `X-Live-Activity-Push-To-Start-Token` | ActivityKit token used to remotely start new activities   |
 
 The relay sends a Live Activity update only for a pipeline event whose ID
-exactly matches the header. Tokens are validated and never logged. The relay
-remains stateless: GitLab stores the current activity-scoped routing headers,
-and a later activity replaces them. Pipeline events must be enabled for the
-project's Comeet notification subscription or GitLab will not deliver the
-updates to the relay.
+exactly matches a registration. Tokens are validated and never logged. The
+activity-scoped routing data remains on the GitLab webhook. A short-lived,
+in-memory process guard also deduplicates repeated remote-start events.
+Pipeline events must be enabled for the project's Comeet notification
+subscription or GitLab will not deliver the updates to the relay.
 
 You can test the endpoint outside GitLab with a representative payload:
 
@@ -221,14 +223,21 @@ Registry:
 docker pull ghcr.io/monokaijs/comeet-notify:latest
 ```
 
-The container uses PM2 in cluster mode. The service is stateless and does not
-require a database or persistent volume. Webhook delivery is synchronous; the
-relay does not currently maintain a queue or its own retry state.
+The container uses one PM2 worker so its remote-start deduplication guard remains
+consistent. The service does not require a database or persistent volume.
+Deployments that run multiple relay replicas must add a shared deduplication
+store before enabling remote starts. Webhook delivery is synchronous; the relay
+does not currently maintain a queue or its own retry state.
 
-Live Activity delivery is best effort and does not make an otherwise successful
-notification webhook fail. Active states become stale after 90 seconds without
+FCM notification and Live Activity delivery are best effort and do not reject an
+otherwise valid GitLab webhook. GitLab pipeline webhooks describe status changes,
+not every job transition, so remote activities contain snapshots rather than a
+job-level event stream. Active states become stale after 15 minutes without
 another pipeline event. Completed activities remain visible for 15 minutes;
 failures remain for one hour so the failed stage and job can be inspected.
+`manual` and `scheduled` pipelines remain active because GitLab can resume them.
+The Comeet app reconciles active activities whenever it opens or returns to the
+foreground, removes duplicates, and ends activities whose pipeline has finished.
 
 ## Production guidance
 

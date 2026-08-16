@@ -47,9 +47,11 @@ export interface PipelineLiveActivityStart {
   event: 'start';
   timestamp: number;
   staleDate: number;
+  inputPushToken: 1;
   contentState: PipelineLiveActivityContentState;
   attributesType: 'PipelineActivityAttributes';
   attributes: {
+    instanceId?: string;
     projectId: number;
     pipelineId: number;
     pipelineName: string;

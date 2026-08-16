@@ -51,6 +51,11 @@ export class WebhooksController {
     required: false,
   })
   @ApiHeader({
+    name: 'x-live-activity-registrations',
+    description: 'JSON list of pipeline IDs and ActivityKit update tokens',
+    required: false,
+  })
+  @ApiHeader({
     name: 'x-live-activity-push-to-start-token',
     description:
       'Optional ActivityKit token for starting pipeline Live Activities',
@@ -60,6 +65,11 @@ export class WebhooksController {
     name: 'x-fcm-token',
     description: 'Firebase Cloud Messaging token for push notifications',
     required: true,
+  })
+  @ApiHeader({
+    name: 'x-comeet-instance-id',
+    description: 'Comeet GitLab instance identifier used for deep links',
+    required: false,
   })
   @ApiBody({
     description: 'GitLab webhook payload',
@@ -120,8 +130,11 @@ export class WebhooksController {
     @Headers('x-fcm-token') fcmToken: string,
     @Headers('x-live-activity-token') liveActivityToken?: string,
     @Headers('x-live-activity-pipeline-id') liveActivityPipelineId?: string,
+    @Headers('x-live-activity-registrations')
+    liveActivityRegistrations?: string,
     @Headers('x-live-activity-push-to-start-token')
     liveActivityPushToStartToken?: string,
+    @Headers('x-comeet-instance-id') instanceId?: string,
   ) {
     this.logger.log(
       `Received GitLab webhook: ${gitlabEvent || payload.object_kind}`,
@@ -135,9 +148,11 @@ export class WebhooksController {
       await this.webhooksService.processWebhook(payload, fcmToken, {
         token: liveActivityToken,
         pipelineId: liveActivityPipelineId,
+        registrations: liveActivityRegistrations,
         pushToStartToken: liveActivityPushToStartToken,
+        instanceId,
       });
-      return { success: true, message: 'Notification sent successfully' };
+      return { success: true, message: 'Webhook processed successfully' };
     } catch (error) {
       this.logger.error(
         `Error processing webhook: ${error.message}`,

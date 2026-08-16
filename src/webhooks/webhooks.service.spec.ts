@@ -58,6 +58,30 @@ describe('WebhooksService Live Activity routing', () => {
     expect(sendUpdate).toHaveBeenCalledWith(pipeline, 'fcm-token', token);
   });
 
+  it('includes the GitLab instance in normal notification navigation data', async () => {
+    await service.processWebhook(pipeline, 'instance-fcm-token', {
+      instanceId: 'gitlab-work',
+    });
+
+    expect(sendNotification).toHaveBeenCalledWith(
+      'instance-fcm-token',
+      expect.objectContaining({
+        data: expect.objectContaining({ instance_id: 'gitlab-work' }),
+      }),
+    );
+  });
+
+  it('acknowledges the webhook when normal FCM delivery fails', async () => {
+    sendNotification.mockResolvedValueOnce({
+      success: false,
+      error: 'expired FCM token',
+    });
+
+    await expect(
+      service.processWebhook(pipeline, 'expired-fcm-token'),
+    ).resolves.toBeUndefined();
+  });
+
   it('does not route a token for another pipeline', async () => {
     await service.processWebhook(pipeline, 'fcm-token', {
       token: 'b'.repeat(64),
@@ -79,6 +103,7 @@ describe('WebhooksService Live Activity routing', () => {
       pipeline,
       'fcm-token',
       pushToStartToken,
+      undefined,
     );
     expect(sendUpdate).not.toHaveBeenCalled();
   });
@@ -92,5 +117,78 @@ describe('WebhooksService Live Activity routing', () => {
 
     expect(sendUpdate).toHaveBeenCalledTimes(1);
     expect(sendStart).not.toHaveBeenCalled();
+  });
+
+  it('routes the matching token from multiple pipeline registrations', async () => {
+    const token42 = 'f'.repeat(64);
+    const token43 = '1'.repeat(64);
+
+    await service.processWebhook(pipeline, 'multi-fcm-token', {
+      registrations: JSON.stringify([
+        { pipelineId: 43, pushToken: token43 },
+        { pipelineId: 42, pushToken: token42 },
+      ]),
+      pushToStartToken: '2'.repeat(64),
+    });
+
+    expect(sendUpdate).toHaveBeenCalledWith(
+      pipeline,
+      'multi-fcm-token',
+      token42,
+    );
+    expect(sendStart).not.toHaveBeenCalled();
+  });
+
+  it('uses the newest eight registrations from older unbounded clients', async () => {
+    const registrations = Array.from({ length: 9 }, (_, index) => ({
+      pipelineId: index === 0 ? 42 : 100 + index,
+      pushToken: String(index + 1).repeat(64),
+    }));
+
+    await service.processWebhook(pipeline, 'bounded-fcm-token', {
+      registrations: JSON.stringify(registrations),
+      pushToStartToken: 'a'.repeat(64),
+    });
+
+    expect(sendUpdate).not.toHaveBeenCalled();
+    expect(sendStart).toHaveBeenCalledTimes(1);
+  });
+
+  it('restarts a running pipeline after its activity registration expires', async () => {
+    const expiredToken = 'b'.repeat(64);
+
+    await service.processWebhook(pipeline, 'expired-activity-fcm-token', {
+      registrations: JSON.stringify([
+        { pipelineId: 42, pushToken: expiredToken, registeredAt: 1 },
+      ]),
+      token: expiredToken,
+      pipelineId: '42',
+      pushToStartToken: 'c'.repeat(64),
+    });
+
+    expect(sendUpdate).not.toHaveBeenCalled();
+    expect(sendStart).toHaveBeenCalledTimes(1);
+  });
+
+  it('deduplicates repeated remote starts for the same device and pipeline', async () => {
+    const repeatedPipeline = {
+      ...pipeline,
+      object_attributes: { ...pipeline.object_attributes, id: 99 },
+    } as GitLabPipelineEvent;
+    const headers = {
+      pushToStartToken: '3'.repeat(64),
+      instanceId: 'gitlab-1',
+    };
+
+    await service.processWebhook(repeatedPipeline, 'dedupe-fcm-token', headers);
+    await service.processWebhook(repeatedPipeline, 'dedupe-fcm-token', headers);
+
+    expect(sendStart).toHaveBeenCalledTimes(1);
+    expect(sendStart).toHaveBeenCalledWith(
+      repeatedPipeline,
+      'dedupe-fcm-token',
+      headers.pushToStartToken,
+      'gitlab-1',
+    );
   });
 });

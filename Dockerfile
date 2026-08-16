@@ -20,4 +20,4 @@ WORKDIR /comeet-notify
 RUN npm install --production \
     && npm install -g pm2
 
-CMD ["pm2-runtime", "dist/main.js", "-i", "max"]
+CMD ["pm2-runtime", "dist/main.js", "-i", "1"]

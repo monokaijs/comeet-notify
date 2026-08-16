@@ -18,12 +18,15 @@ const WAITING_STATUSES = new Set([
   'preparing',
   'pending',
   'scheduled',
+  'waiting_for_callback',
+  'canceling',
 ]);
 const COMPLETED_STAGE_STATUSES = new Set<PipelineLiveActivityStageStatus>([
   'success',
   'skipped',
 ]);
 const MAX_VISIBLE_STAGES = 6;
+const ACTIVE_STALE_AFTER_SECONDS = 15 * 60;
 
 function truncate(value: string, maxLength: number): string {
   return value.length > maxLength ? `${value.slice(0, maxLength - 1)}…` : value;
@@ -136,7 +139,9 @@ export class PipelineLiveActivityService {
     return {
       event: isTerminal ? 'end' : 'update',
       timestamp,
-      staleDate: isTerminal ? undefined : timestamp + 90,
+      staleDate: isTerminal
+        ? undefined
+        : timestamp + ACTIVE_STALE_AFTER_SECONDS,
       dismissalDate: isTerminal
         ? timestamp + (status === 'failed' ? 60 * 60 : 15 * 60)
         : undefined,
@@ -161,6 +166,7 @@ export class PipelineLiveActivityService {
   buildStart(
     payload: GitLabPipelineEvent,
     now = new Date(),
+    instanceId?: string,
   ): PipelineLiveActivityStart {
     const update = this.buildUpdate(payload, now);
     const pipelineId = payload.object_attributes.id;
@@ -168,10 +174,13 @@ export class PipelineLiveActivityService {
     return {
       event: 'start',
       timestamp: update.timestamp,
-      staleDate: update.staleDate ?? update.timestamp + 90,
+      staleDate:
+        update.staleDate ?? update.timestamp + ACTIVE_STALE_AFTER_SECONDS,
+      inputPushToken: 1,
       contentState: update.contentState,
       attributesType: 'PipelineActivityAttributes',
       attributes: {
+        ...(instanceId ? { instanceId } : {}),
         projectId,
         pipelineId,
         pipelineName: truncate(
@@ -179,7 +188,9 @@ export class PipelineLiveActivityService {
           80,
         ),
         ref: truncate(payload.object_attributes.ref || 'detached', 80),
-        deepLink: `comeet:///PipelineDetails?projectId=${projectId}&pipelineId=${pipelineId}`,
+        deepLink: `comeet:///PipelineDetails?projectId=${projectId}&pipelineId=${pipelineId}${
+          instanceId ? `&instanceId=${encodeURIComponent(instanceId)}` : ''
+        }&notificationSource=liveActivity`,
       },
       alert: {
         title: `${payload.project.name} build started`,
@@ -205,12 +216,13 @@ export class PipelineLiveActivityService {
     payload: GitLabPipelineEvent,
     fcmToken: string,
     pushToStartToken: string,
+    instanceId?: string,
   ) {
     const collapseId = `comeet-${payload.project.id}-${payload.object_attributes.id}`;
     return this.fcmService.sendLiveActivity(
       fcmToken,
       pushToStartToken,
-      this.buildStart(payload),
+      this.buildStart(payload, new Date(), instanceId),
       collapseId,
     );
   }

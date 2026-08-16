@@ -118,6 +118,7 @@ export class FcmService implements OnModuleInit {
     if ('dismissalDate' in update && update.dismissalDate !== undefined)
       aps['dismissal-date'] = update.dismissalDate;
     if (update.event === 'start') {
+      aps['input-push-token'] = update.inputPushToken;
       aps['attributes-type'] = update.attributesType;
       aps.attributes = update.attributes;
       aps.alert = update.alert;
