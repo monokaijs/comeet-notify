@@ -171,6 +171,7 @@ export interface GitLabPipelineBuild {
   name: string;
   stage: string;
   status: string;
+  allow_failure?: boolean;
 }
 
 export interface GitLabTagPushEvent {

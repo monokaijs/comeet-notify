@@ -41,18 +41,129 @@ describe('PipelineLiveActivityService', () => {
       contentState: {
         status: 'failed',
         stages: [
-          { name: 'prepare', status: 'success' },
-          { name: 'build', status: 'success' },
-          { name: 'test', status: 'failed' },
-          { name: 'deploy', status: 'pending' },
+          {
+            name: 'prepare',
+            status: 'success',
+            completedJobCount: 1,
+            totalJobCount: 1,
+          },
+          {
+            name: 'build',
+            status: 'success',
+            completedJobCount: 1,
+            totalJobCount: 1,
+          },
+          {
+            name: 'test',
+            status: 'failed',
+            completedJobCount: 1,
+            totalJobCount: 1,
+          },
+          {
+            name: 'deploy',
+            status: 'pending',
+            completedJobCount: 0,
+            totalJobCount: 1,
+          },
         ],
         currentStageName: 'test',
         failedStageName: 'test',
         failedJobName: 'unit tests',
         completedStageCount: 2,
         totalStageCount: 4,
+        completedJobCount: 3,
+        totalJobCount: 4,
         updatedAt: 1786320000,
       },
+    });
+  });
+
+  it('reports job-level progress for parallel jobs within each stage', () => {
+    const payload = makePipeline();
+    payload.object_attributes.status = 'running';
+    payload.builds = [
+      { id: 1, name: 'web', stage: 'build', status: 'success' },
+      { id: 2, name: 'ios', stage: 'build', status: 'running' },
+      { id: 3, name: 'android', stage: 'build', status: 'pending' },
+      { id: 4, name: 'unit', stage: 'test', status: 'pending' },
+      { id: 5, name: 'e2e', stage: 'test', status: 'pending' },
+    ];
+
+    const update = service.buildUpdate(payload);
+
+    expect(update.contentState.stages).toEqual([
+      {
+        name: 'build',
+        status: 'running',
+        completedJobCount: 1,
+        totalJobCount: 3,
+      },
+      {
+        name: 'test',
+        status: 'pending',
+        completedJobCount: 0,
+        totalJobCount: 2,
+      },
+    ]);
+    expect(update.contentState.completedJobCount).toBe(1);
+    expect(update.contentState.totalJobCount).toBe(5);
+  });
+
+  it('shows a successful terminal pipeline as fully complete even with optional manual jobs', () => {
+    const payload = makePipeline();
+    payload.object_attributes.status = 'success';
+    payload.object_attributes.stages = ['build', 'deploy'];
+    payload.builds = [
+      { id: 1, name: 'compile', stage: 'build', status: 'success' },
+      { id: 2, name: 'production', stage: 'deploy', status: 'manual' },
+    ];
+
+    const update = service.buildUpdate(payload);
+
+    expect(update.event).toBe('end');
+    expect(update.contentState.stages).toEqual([
+      {
+        name: 'build',
+        status: 'success',
+        completedJobCount: 1,
+        totalJobCount: 1,
+      },
+      {
+        name: 'deploy',
+        status: 'skipped',
+        completedJobCount: 1,
+        totalJobCount: 1,
+      },
+    ]);
+    expect(update.contentState.completedJobCount).toBe(2);
+    expect(update.contentState.totalJobCount).toBe(2);
+    expect(update.contentState.completedStageCount).toBe(2);
+  });
+
+  it('keeps progress focused on running work after an allowed job failure', () => {
+    const payload = makePipeline();
+    payload.object_attributes.status = 'running';
+    payload.object_attributes.stages = ['test', 'deploy'];
+    payload.builds = [
+      {
+        id: 1,
+        name: 'optional lint',
+        stage: 'test',
+        status: 'failed',
+        allow_failure: true,
+      },
+      { id: 2, name: 'release', stage: 'deploy', status: 'running' },
+    ];
+
+    const update = service.buildUpdate(payload);
+
+    expect(update.contentState.currentStageName).toBe('deploy');
+    expect(update.contentState.failedStageName).toBeUndefined();
+    expect(update.contentState.failedJobName).toBeUndefined();
+    expect(update.contentState.stages[0]).toMatchObject({
+      name: 'test',
+      status: 'success',
+      completedJobCount: 1,
     });
   });
 
@@ -144,4 +255,20 @@ describe('PipelineLiveActivityService', () => {
       expect(service.buildUpdate(payload).event).toBe('end');
     },
   );
+
+  it('delivers terminal content through the pipeline collapse channel', async () => {
+    const payload = makePipeline();
+
+    await service.sendUpdate(payload, 'fcm-token', 'activity-token');
+
+    expect(sendLiveActivity).toHaveBeenCalledWith(
+      'fcm-token',
+      'activity-token',
+      expect.objectContaining({
+        event: 'end',
+        contentState: expect.objectContaining({ status: 'failed' }),
+      }),
+      'comeet-7-42',
+    );
+  });
 });

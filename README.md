@@ -121,6 +121,7 @@ Comeet stores the active pipeline registrations on the existing project webhook:
 | Header                                | Purpose                                                   |
 | ------------------------------------- | --------------------------------------------------------- |
 | `X-Comeet-Instance-ID`                | GitLab instance used for notification and activity links  |
+| `X-Pipeline-Delivery-Mode`            | `live_activity`, `notification`, or `both`                 |
 | `X-Live-Activity-Registrations`       | JSON list of pipeline IDs and ActivityKit update tokens   |
 | `X-Live-Activity-Token`               | Legacy single-activity token used during rolling upgrades |
 | `X-Live-Activity-Pipeline-ID`         | Pipeline associated with the legacy token                 |
@@ -132,6 +133,9 @@ activity-scoped routing data remains on the GitLab webhook. A short-lived,
 in-memory process guard also deduplicates repeated remote-start events.
 Pipeline events must be enabled for the project's Comeet notification
 subscription or GitLab will not deliver the updates to the relay.
+The pipeline delivery mode independently controls regular notification and
+Live Activity delivery. Missing or invalid mode headers default to `both` for
+compatibility with older Comeet clients.
 
 You can test the endpoint outside GitLab with a representative payload:
 
