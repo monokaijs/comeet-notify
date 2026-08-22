@@ -22,6 +22,8 @@ export type PipelineLiveActivityStageStatus =
 export interface PipelineLiveActivityStage {
   name: string;
   status: PipelineLiveActivityStageStatus;
+  completedJobCount: number;
+  totalJobCount: number;
 }
 
 export interface PipelineLiveActivityContentState {
@@ -32,6 +34,8 @@ export interface PipelineLiveActivityContentState {
   failedJobName?: string;
   completedStageCount: number;
   totalStageCount: number;
+  completedJobCount: number;
+  totalJobCount: number;
   updatedAt: number;
 }
 

@@ -25,6 +25,12 @@ const COMPLETED_STAGE_STATUSES = new Set<PipelineLiveActivityStageStatus>([
   'success',
   'skipped',
 ]);
+const COMPLETED_JOB_STATUSES = new Set([
+  'success',
+  'failed',
+  'canceled',
+  'skipped',
+]);
 const MAX_VISIBLE_STAGES = 6;
 const ACTIVE_STALE_AFTER_SECONDS = 15 * 60;
 
@@ -50,7 +56,11 @@ function normalizeBuildStatus(status: string): PipelineLiveActivityStageStatus {
 function aggregateStageStatus(
   builds: GitLabPipelineBuild[],
 ): PipelineLiveActivityStageStatus {
-  const statuses = builds.map(({ status }) => normalizeBuildStatus(status));
+  const statuses = builds.map(({ status, allow_failure }) =>
+    status === 'failed' && allow_failure
+      ? 'success'
+      : normalizeBuildStatus(status),
+  );
   if (statuses.includes('failed')) return 'failed';
   if (statuses.includes('running')) return 'running';
   if (statuses.includes('pending')) return 'pending';
@@ -61,6 +71,28 @@ function aggregateStageStatus(
   if (statuses.every((status) => status === 'success' || status === 'skipped'))
     return 'success';
   return 'pending';
+}
+
+function terminalStageStatus(
+  status: PipelineLiveActivityStageStatus,
+  builds: GitLabPipelineBuild[],
+  pipelineStatus: string,
+): PipelineLiveActivityStageStatus {
+  if (pipelineStatus === 'success') {
+    return builds.every(({ status: buildStatus }) =>
+      ['manual', 'skipped'].includes(buildStatus),
+    )
+      ? 'skipped'
+      : 'success';
+  }
+  if (pipelineStatus === 'skipped') return 'skipped';
+  if (
+    pipelineStatus === 'canceled' &&
+    ['running', 'pending', 'manual'].includes(status)
+  ) {
+    return 'canceled';
+  }
+  return status;
 }
 
 function buildStages(
@@ -87,10 +119,25 @@ function buildStages(
 
   return orderedStageNames
     .filter((stageName) => grouped.get(stageName)!.length > 0)
-    .map((stageName) => ({
-      name: truncate(stageName, 32),
-      status: aggregateStageStatus(grouped.get(stageName)!),
-    }));
+    .map((stageName) => {
+      const builds = grouped.get(stageName)!;
+      const terminalPipelineCompleted = ['success', 'skipped'].includes(
+        payload.object_attributes.status,
+      );
+      return {
+        name: truncate(stageName, 32),
+        status: terminalStageStatus(
+          aggregateStageStatus(builds),
+          builds,
+          payload.object_attributes.status,
+        ),
+        completedJobCount: terminalPipelineCompleted
+          ? builds.length
+          : builds.filter(({ status }) => COMPLETED_JOB_STATUSES.has(status))
+              .length,
+        totalJobCount: builds.length,
+      };
+    });
 }
 
 function selectVisibleStages(
@@ -115,21 +162,32 @@ export class PipelineLiveActivityService {
     const failedStageIndex = stages.findIndex(
       ({ status }) => status === 'failed',
     );
-    const activeStageIndex = stages.findIndex(({ status }) =>
-      ['running', 'pending', 'manual', 'canceled'].includes(status),
+    const runningStageIndex = stages.findIndex(
+      ({ status }) => status === 'running',
+    );
+    const waitingStageIndex = stages.findIndex(({ status }) =>
+      ['pending', 'manual'].includes(status),
+    );
+    const canceledStageIndex = stages.findIndex(
+      ({ status }) => status === 'canceled',
     );
     const focusIndex =
       failedStageIndex >= 0
         ? failedStageIndex
-        : activeStageIndex >= 0
-          ? activeStageIndex
-          : Math.max(0, stages.length - 1);
+        : runningStageIndex >= 0
+          ? runningStageIndex
+          : waitingStageIndex >= 0
+            ? waitingStageIndex
+            : canceledStageIndex >= 0
+              ? canceledStageIndex
+              : Math.max(0, stages.length - 1);
     const focusedStage = stages[focusIndex];
     const failedBuild = [...(payload.builds ?? [])]
       .sort((a, b) => a.id - b.id)
       .find(
-        ({ status, stage }) =>
+        ({ status, stage, allow_failure }) =>
           status === 'failed' &&
+          !allow_failure &&
           truncate(stage || 'Build', 32) === focusedStage?.name,
       );
     const status = payload.object_attributes.status;
@@ -158,6 +216,12 @@ export class PipelineLiveActivityService {
           COMPLETED_STAGE_STATUSES.has(stageStatus),
         ).length,
         totalStageCount: stages.length,
+        completedJobCount: ['success', 'skipped'].includes(status)
+          ? (payload.builds ?? []).length
+          : (payload.builds ?? []).filter(({ status: buildStatus }) =>
+              COMPLETED_JOB_STATUSES.has(buildStatus),
+            ).length,
+        totalJobCount: (payload.builds ?? []).length,
         updatedAt: timestamp,
       },
     };
@@ -205,10 +269,12 @@ export class PipelineLiveActivityService {
     fcmToken: string,
     liveActivityToken: string,
   ) {
+    const collapseId = `comeet-${payload.project.id}-${payload.object_attributes.id}`;
     return this.fcmService.sendLiveActivity(
       fcmToken,
       liveActivityToken,
       this.buildUpdate(payload),
+      collapseId,
     );
   }
 

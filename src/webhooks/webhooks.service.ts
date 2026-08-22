@@ -10,7 +10,10 @@ interface LiveActivityHeaders {
   registrations?: string;
   pushToStartToken?: string;
   instanceId?: string;
+  pipelineDeliveryMode?: string;
 }
+
+type PipelineDeliveryMode = 'live_activity' | 'notification' | 'both';
 
 const LIVE_ACTIVITY_TOKEN_PATTERN = /^[a-fA-F0-9]{32,512}$/;
 const MAX_LIVE_ACTIVITY_REGISTRATIONS = 8;
@@ -74,20 +77,28 @@ export class WebhooksService {
         fcmData.instance_id = liveActivity.instanceId;
       }
 
-      const notificationPromise = this.fcmService.sendNotification(fcmToken, {
-        title: notificationData.title,
-        body: notificationData.message,
-        data: fcmData,
-      });
+      const pipelineDeliveryMode = this.pipelineDeliveryMode(liveActivity);
+      const allowsNotification =
+        payload.object_kind !== 'pipeline' ||
+        pipelineDeliveryMode !== 'live_activity';
+      const allowsLiveActivity =
+        payload.object_kind === 'pipeline' &&
+        pipelineDeliveryMode !== 'notification';
+      const notificationPromise = allowsNotification
+        ? this.fcmService.sendNotification(fcmToken, {
+            title: notificationData.title,
+            body: notificationData.message,
+            data: fcmData,
+          })
+        : Promise.resolve(null);
       let liveActivityPromise = Promise.resolve<Awaited<
         ReturnType<PipelineLiveActivityService['sendUpdate']>
       > | null>(null);
-      const liveActivityToken = this.findLiveActivityToken(
-        payload,
-        liveActivity,
-      );
+      const liveActivityToken = allowsLiveActivity
+        ? this.findLiveActivityToken(payload, liveActivity)
+        : undefined;
       const startKey = this.liveActivityStartKey(payload, fcmToken);
-      if (payload.object_kind === 'pipeline' && liveActivityToken) {
+      if (allowsLiveActivity && liveActivityToken) {
         liveActivityPromise = this.pipelineLiveActivityService.sendUpdate(
           payload,
           fcmToken,
@@ -100,7 +111,7 @@ export class WebhooksService {
           this.remotelyStartedPipelines.delete(startKey);
         }
       } else if (
-        payload.object_kind === 'pipeline' &&
+        allowsLiveActivity &&
         this.shouldStartLiveActivity(payload, liveActivity, fcmToken)
       ) {
         this.remotelyStartedPipelines.set(startKey, Date.now());
@@ -132,7 +143,11 @@ export class WebhooksService {
         );
       }
 
-      if (result.success) {
+      if (!result) {
+        this.logger.log(
+          'Regular pipeline notification suppressed by delivery preference',
+        );
+      } else if (result.success) {
         this.logger.log(
           `Notification sent successfully for ${payload.object_kind} event`,
         );
@@ -148,6 +163,16 @@ export class WebhooksService {
       );
       throw error;
     }
+  }
+
+  private pipelineDeliveryMode(
+    headers: LiveActivityHeaders,
+  ): PipelineDeliveryMode {
+    return ['live_activity', 'notification', 'both'].includes(
+      headers.pipelineDeliveryMode ?? '',
+    )
+      ? (headers.pipelineDeliveryMode as PipelineDeliveryMode)
+      : 'both';
   }
 
   private findLiveActivityToken(

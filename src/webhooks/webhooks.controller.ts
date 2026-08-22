@@ -62,6 +62,12 @@ export class WebhooksController {
     required: false,
   })
   @ApiHeader({
+    name: 'x-pipeline-delivery-mode',
+    description:
+      'Pipeline delivery channel: live_activity, notification, or both',
+    required: false,
+  })
+  @ApiHeader({
     name: 'x-fcm-token',
     description: 'Firebase Cloud Messaging token for push notifications',
     required: true,
@@ -135,6 +141,7 @@ export class WebhooksController {
     @Headers('x-live-activity-push-to-start-token')
     liveActivityPushToStartToken?: string,
     @Headers('x-comeet-instance-id') instanceId?: string,
+    @Headers('x-pipeline-delivery-mode') pipelineDeliveryMode?: string,
   ) {
     this.logger.log(
       `Received GitLab webhook: ${gitlabEvent || payload.object_kind}`,
@@ -151,6 +158,7 @@ export class WebhooksController {
         registrations: liveActivityRegistrations,
         pushToStartToken: liveActivityPushToStartToken,
         instanceId,
+        pipelineDeliveryMode,
       });
       return { success: true, message: 'Webhook processed successfully' };
     } catch (error) {

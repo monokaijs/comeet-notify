@@ -119,6 +119,49 @@ describe('WebhooksService Live Activity routing', () => {
     expect(sendStart).not.toHaveBeenCalled();
   });
 
+  it('sends only a Live Activity when live_activity delivery is selected', async () => {
+    const token = '4'.repeat(64);
+
+    await service.processWebhook(pipeline, 'live-only-fcm-token', {
+      pipelineDeliveryMode: 'live_activity',
+      token,
+      pipelineId: '42',
+    });
+
+    expect(sendNotification).not.toHaveBeenCalled();
+    expect(sendUpdate).toHaveBeenCalledWith(
+      pipeline,
+      'live-only-fcm-token',
+      token,
+    );
+  });
+
+  it('sends only a notification when notification delivery is selected', async () => {
+    await service.processWebhook(pipeline, 'notification-only-fcm-token', {
+      pipelineDeliveryMode: 'notification',
+      token: '5'.repeat(64),
+      pipelineId: '42',
+      pushToStartToken: '6'.repeat(64),
+    });
+
+    expect(sendNotification).toHaveBeenCalledTimes(1);
+    expect(sendUpdate).not.toHaveBeenCalled();
+    expect(sendStart).not.toHaveBeenCalled();
+  });
+
+  it('keeps both delivery channels enabled when both is selected', async () => {
+    const token = '7'.repeat(64);
+
+    await service.processWebhook(pipeline, 'both-fcm-token', {
+      pipelineDeliveryMode: 'both',
+      token,
+      pipelineId: '42',
+    });
+
+    expect(sendNotification).toHaveBeenCalledTimes(1);
+    expect(sendUpdate).toHaveBeenCalledTimes(1);
+  });
+
   it('routes the matching token from multiple pipeline registrations', async () => {
     const token42 = 'f'.repeat(64);
     const token43 = '1'.repeat(64);
