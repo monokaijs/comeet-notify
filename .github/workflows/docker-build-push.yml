@@ -5,7 +5,7 @@ on:
     branches:
       - master
     tags:
-      - 'v*'
+      - "v*"
   pull_request:
     branches:
       - master
@@ -68,3 +68,103 @@ jobs:
             BUILDTIME=${{ fromJSON(steps.meta.outputs.json).labels['org.opencontainers.image.created'] }}
             VERSION=${{ fromJSON(steps.meta.outputs.json).labels['org.opencontainers.image.version'] }}
             REVISION=${{ fromJSON(steps.meta.outputs.json).labels['org.opencontainers.image.revision'] }}
+
+  deploy:
+    name: Deploy to production
+    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    environment: production
+    concurrency:
+      group: comeet-notify-production
+      cancel-in-progress: true
+    permissions:
+      contents: read
+
+    env:
+      DEPLOY_HOST: ${{ vars.DEPLOY_HOST }}
+      DEPLOY_PORT: ${{ vars.DEPLOY_PORT }}
+      DEPLOY_USER: ${{ vars.DEPLOY_USER }}
+      DEPLOY_ENV_FILE: ${{ vars.DEPLOY_ENV_FILE }}
+      IMAGE: ghcr.io/${{ github.repository }}:latest
+
+    steps:
+      - name: Validate deployment configuration
+        shell: bash
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          [[ "$DEPLOY_HOST" =~ ^[a-zA-Z0-9._:-]+$ ]]
+          [[ "$DEPLOY_PORT" =~ ^[0-9]+$ ]]
+          [[ "$DEPLOY_USER" =~ ^[a-z_][a-z0-9_-]*$ ]]
+          [[ "$DEPLOY_ENV_FILE" =~ ^/[a-zA-Z0-9_./-]+$ ]]
+          [[ -n "$DEPLOY_SSH_KEY" ]]
+          [[ -n "$DEPLOY_KNOWN_HOSTS" ]]
+
+      - name: Configure SSH
+        shell: bash
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/id_ed25519 ~/.ssh/known_hosts
+
+      - name: Deploy container
+        shell: bash
+        run: |
+          set -euo pipefail
+          ssh -p "$DEPLOY_PORT" "$DEPLOY_USER@$DEPLOY_HOST" \
+            bash -s -- "$IMAGE" "$DEPLOY_ENV_FILE" <<'REMOTE'
+          set -euo pipefail
+
+          image="$1"
+          env_file="$2"
+          container="comeet-notify"
+
+          if [[ ! -f "$env_file" ]]; then
+            echo "Deployment environment file not found: $env_file" >&2
+            exit 1
+          fi
+
+          previous_image="$(docker inspect --format '{{.Image}}' "$container" 2>/dev/null || true)"
+          docker pull "$image"
+          docker rm --force "$container" 2>/dev/null || true
+
+          start_container() {
+            docker run --detach \
+              --name "$container" \
+              --restart unless-stopped \
+              --env-file "$env_file" \
+              --publish 127.0.0.1:3000:3000 \
+              "$1"
+          }
+
+          if ! start_container "$image"; then
+            if [[ -n "$previous_image" ]]; then
+              start_container "$previous_image"
+            fi
+            exit 1
+          fi
+
+          for attempt in {1..30}; do
+            if docker exec "$container" node -e \
+              "fetch('http://127.0.0.1:3000/').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"; then
+              docker image prune --force >/dev/null
+              exit 0
+            fi
+            sleep 2
+          done
+
+          docker logs --tail 100 "$container" >&2 || true
+          docker rm --force "$container" 2>/dev/null || true
+          if [[ -n "$previous_image" ]]; then
+            start_container "$previous_image"
+          fi
+          exit 1
+          REMOTE
