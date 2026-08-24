@@ -8,7 +8,7 @@ start, update, and end iOS Live Activities.
 ```mermaid
 flowchart LR
     GitLab["GitLab project"] -->|"Webhook + device headers"| Relay["Comeet Notify"]
-    Relay -->|"Firebase Admin SDK"| FCM["Firebase Cloud Messaging"]
+    Relay -->|"FCM HTTP v1"| FCM["Firebase Cloud Messaging"]
     FCM -->|"Push notification + deep-link data"| App["Comeet mobile app"]
     FCM -->|"ActivityKit update / end"| Activity["iOS Live Activity"]
 ```
@@ -21,7 +21,8 @@ flowchart LR
 - Includes project and event metadata for in-app deep links
 - Updates and ends pipeline Live Activities with status snapshots and available stage details
 - Checks required delivery headers and provides structured errors and request logs
-- Ships with a multi-stage Docker image and PM2 runtime
+- Runs as a single memory-efficient Axum/Tokio binary
+- Ships with a multi-stage, non-root Debian container image
 - Exposes interactive OpenAPI documentation with Swagger UI
 
 ## Supported GitLab events
@@ -38,8 +39,8 @@ Unsupported webhook event types are ignored without sending a notification.
 
 ## Requirements
 
-- Node.js 20 or later
-- npm
+- Rust 1.93 or later
+- Cargo
 - A Firebase project with Cloud Messaging enabled
 - A Firebase service-account key
 - An FCM registration token from the Comeet mobile app
@@ -47,12 +48,11 @@ Unsupported webhook event types are ignored without sending a notification.
 
 ## Quick start
 
-1. Clone the repository and install dependencies:
+1. Clone the repository:
 
    ```bash
    git clone https://github.com/monokaijs/comeet-notify.git
    cd comeet-notify
-   npm ci
    ```
 
 2. Create your local environment file:
@@ -76,7 +76,7 @@ Unsupported webhook event types are ignored without sending a notification.
 4. Start the development server:
 
    ```bash
-   npm run start:dev
+   cargo run
    ```
 
 The relay is available at `http://localhost:3000`, and the Swagger UI is
@@ -152,18 +152,20 @@ curl --request POST http://localhost:3000/webhooks/gitlab \
     "project_id": 15,
     "total_commits_count": 1,
     "project": {
+      "id": 15,
       "name": "example-project",
       "web_url": "https://gitlab.example.com/group/example-project"
     }
   }'
 ```
 
-A successfully delivered notification returns:
+A valid, acknowledged webhook returns this response even when best-effort FCM
+delivery fails:
 
 ```json
 {
   "success": true,
-  "message": "Notification sent successfully"
+  "message": "Webhook processed successfully"
 }
 ```
 
@@ -198,13 +200,14 @@ values are serialized as strings.
 | ----------------------- | -------- | ------------- | --------------------------------------------------------------- |
 | `PORT`                  | No       | `3000`        | HTTP port used by the service                                   |
 | `NODE_ENV`              | No       | `development` | Application environment                                         |
-| `LOG_LEVEL`             | No       | `info`        | Loaded log-level value; logger filtering is not yet wired to it |
+| `LOG_LEVEL`             | No       | `info`        | Tracing filter, such as `info`, `debug`, or a module directive   |
 | `FIREBASE_PROJECT_ID`   | Yes      | —             | Firebase project ID                                             |
 | `FIREBASE_PRIVATE_KEY`  | Yes      | —             | Firebase service-account private key                            |
 | `FIREBASE_CLIENT_EMAIL` | Yes      | —             | Firebase service-account client email                           |
 
-If any Firebase credential is missing, the API starts but FCM delivery remains
-unavailable and webhook requests fail.
+If any Firebase credential is missing or the private key is invalid, the API
+starts with FCM disabled. Valid GitLab webhooks are still acknowledged because
+notification delivery is best effort.
 
 ## Docker
 
@@ -227,8 +230,11 @@ Registry:
 docker pull ghcr.io/monokaijs/comeet-notify:latest
 ```
 
-The container uses one PM2 worker so its remote-start deduplication guard remains
-consistent. The service does not require a database or persistent volume.
+The container runs one non-root Rust process with two Tokio worker threads, an
+internal health check, and graceful SIGTERM handling. The service does not
+require PostgreSQL, another database, or a persistent volume because all routing
+state remains on the GitLab webhook and the only server-side guard is temporary
+remote-start deduplication.
 Deployments that run multiple relay replicas must add a shared deduplication
 store before enabling remote starts. Webhook delivery is synchronous; the relay
 does not currently maintain a queue or its own retry state.
@@ -261,23 +267,32 @@ foreground, removes duplicates, and ends activities whose pipeline has finished.
 ## Development
 
 ```bash
-npm run start:dev   # Start with file watching
-npm run build       # Compile the application
-npm run start:prod  # Run the compiled application
-npm run lint        # Lint and apply safe fixes
-npm test            # Run unit tests
+cargo run                                      # Start the service
+cargo fmt --all -- --check                     # Check formatting
+cargo clippy --all-targets --all-features -- -D warnings
+cargo test --all-targets --all-features --locked
+cargo build --release --locked                 # Optimized production binary
+target/release/comeet-notify healthcheck       # Probe a running local service
 ```
 
 Project layout:
 
 ```text
 src/
-├── common/       # Logging and exception handling
-├── config/       # Environment-backed configuration
-├── fcm/          # Firebase initialization and message delivery
-├── webhooks/     # GitLab endpoint, event parser, and DTOs
-├── app.module.ts
-└── main.ts
+├── app.rs            # Axum routes, middleware, errors, and OpenAPI
+├── config.rs         # Environment-backed configuration
+├── fcm.rs            # OAuth token cache and FCM HTTP v1 delivery
+├── live_activity.rs  # ActivityKit pipeline state builder
+├── models.rs         # GitLab and response models
+├── parser.rs         # GitLab notification parser
+├── webhooks.rs       # Delivery routing and remote-start deduplication
+├── lib.rs
+└── main.rs           # Two-thread Tokio runtime and healthcheck command
+
+tests/
+├── fcm_contract.rs
+├── http_contract.rs
+└── routing_contract.rs
 ```
 
 ## Troubleshooting
@@ -287,7 +302,7 @@ src/
 Confirm that all three `FIREBASE_*` variables are present. If using Docker,
 verify that the container receives the intended environment file.
 
-**`Firebase not initialized`**
+**`FCM is disabled`**
 
 Check the service-account values and container logs. In particular, make sure
 the private key contains escaped `\n` line breaks and remains wrapped in quotes.
@@ -300,8 +315,8 @@ header.
 
 **Webhook returns `400 Bad Request`**
 
-Ensure `X-FCM-Token` is set and the selected GitLab event is supported. Review
-the application logs for the Firebase error reported during delivery.
+Ensure `X-FCM-Token` is set and the JSON body is valid. Unsupported GitLab event
+types are intentionally acknowledged with `201` and do not send a message.
 
 ## License
 

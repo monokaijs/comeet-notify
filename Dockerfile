@@ -1,23 +1,20 @@
-FROM node:20-alpine AS build-stage
+FROM rust:1.93-bookworm AS builder
 
-WORKDIR /comeet-notify
+WORKDIR /build
 
-COPY package.json .
+COPY Cargo.toml Cargo.lock ./
+COPY src ./src
 
-RUN npm install
+RUN cargo build --locked --release
 
-COPY . .
+FROM gcr.io/distroless/cc-debian12:nonroot
 
-RUN npm run build
+COPY --from=builder /build/target/release/comeet-notify /usr/local/bin/comeet-notify
 
-FROM node:20-alpine AS prod-stage
+USER nonroot:nonroot
+EXPOSE 3000
 
-COPY --from=build-stage /comeet-notify/dist /comeet-notify/dist
-COPY --from=build-stage /comeet-notify/package.json /comeet-notify/package.json
+HEALTHCHECK --interval=10s --timeout=4s --start-period=5s --retries=3 \
+  CMD ["/usr/local/bin/comeet-notify", "healthcheck"]
 
-WORKDIR /comeet-notify
-
-RUN npm install --production \
-    && npm install -g pm2
-
-CMD ["pm2-runtime", "dist/main.js", "-i", "1"]
+ENTRYPOINT ["/usr/local/bin/comeet-notify"]

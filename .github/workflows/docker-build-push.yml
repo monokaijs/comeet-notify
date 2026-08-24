@@ -15,7 +15,97 @@ env:
   IMAGE_NAME: ${{ github.repository }}
 
 jobs:
+  verify:
+    name: Verify Rust service
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.93"
+          components: rustfmt, clippy
+
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Run Clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+      - name: Run tests
+        run: cargo test --all-targets --all-features --locked
+
+      - name: Build release binary
+        run: cargo build --release --locked
+
+  container-smoke:
+    name: Smoke-test ${{ matrix.arch }} image
+    needs: verify
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            platform: linux/amd64
+          - arch: arm64
+            platform: linux/arm64
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build smoke-test image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: ${{ matrix.platform }}
+          load: true
+          tags: comeet-notify:smoke
+          cache-from: type=gha,scope=smoke-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=smoke-${{ matrix.arch }}
+
+      - name: Smoke-test container health, user, and shutdown
+        shell: bash
+        run: |
+          set -euo pipefail
+          container="comeet-notify-smoke"
+          trap 'docker rm --force "$container" >/dev/null 2>&1 || true' EXIT
+          docker run --detach --name "$container" --publish 127.0.0.1::3000 comeet-notify:smoke
+          [[ "$(docker inspect --format '{{.Config.User}}' "$container")" != "0" ]]
+          for attempt in {1..30}; do
+            status="$(docker inspect --format '{{.State.Health.Status}}' "$container")"
+            if [[ "$status" == "healthy" ]]; then
+              break
+            fi
+            if [[ "$status" == "unhealthy" ]]; then
+              docker logs "$container"
+              exit 1
+            fi
+            sleep 1
+          done
+          [[ "$(docker inspect --format '{{.State.Health.Status}}' "$container")" == "healthy" ]]
+          docker stop --time 10 "$container"
+          [[ "$(docker inspect --format '{{.State.ExitCode}}' "$container")" == "0" ]]
+
   build-and-push:
+    needs: [verify, container-smoke]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -25,6 +115,9 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -49,8 +142,8 @@ jobs:
             type=semver,pattern={{major}}
             type=raw,value=latest,enable={{is_default_branch}}
           labels: |
-            org.opencontainers.image.title=NestJS Rapid Boilerplate
-            org.opencontainers.image.description=A comprehensive NestJS boilerplate with authentication, pagination, logging, and API documentation
+            org.opencontainers.image.title=Comeet Notify
+            org.opencontainers.image.description=Rust GitLab webhook relay for FCM notifications and iOS Live Activities
             org.opencontainers.image.vendor=${{ github.repository_owner }}
 
       - name: Build and push Docker image
@@ -58,16 +151,11 @@ jobs:
         with:
           context: .
           platforms: linux/amd64,linux/arm64
-          push: true
+          push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
-          build-args: |
-            VITE_API_BASE_URL=${{ secrets.VITE_API_BASE_URL }}
-            BUILDTIME=${{ fromJSON(steps.meta.outputs.json).labels['org.opencontainers.image.created'] }}
-            VERSION=${{ fromJSON(steps.meta.outputs.json).labels['org.opencontainers.image.version'] }}
-            REVISION=${{ fromJSON(steps.meta.outputs.json).labels['org.opencontainers.image.revision'] }}
 
   deploy:
     name: Deploy to production
@@ -153,10 +241,13 @@ jobs:
           fi
 
           for attempt in {1..30}; do
-            if docker exec "$container" node -e \
-              "fetch('http://127.0.0.1:3000/').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"; then
+            health="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$container")"
+            if [[ "$health" == "healthy" ]]; then
               docker image prune --force >/dev/null
               exit 0
+            fi
+            if [[ "$health" == "unhealthy" || "$health" == "none" ]]; then
+              break
             fi
             sleep 2
           done
