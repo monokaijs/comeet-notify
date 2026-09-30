@@ -154,6 +154,7 @@ fn root_response() -> impl IntoResponse {
         ("x-live-activity-registrations" = Option<String>, Header, description = "JSON ActivityKit registrations"),
         ("x-live-activity-push-to-start-token" = Option<String>, Header, description = "ActivityKit push-to-start token"),
         ("x-comeet-instance-id" = Option<String>, Header, description = "Comeet GitLab instance identifier"),
+        ("x-gitlab-instance" = Option<String>, Header, description = "GitLab instance URL used to isolate pipeline snapshots"),
         ("x-pipeline-delivery-mode" = Option<String>, Header, description = "live_activity, notification, or both")
     ),
     responses(
@@ -195,6 +196,7 @@ async fn handle_gitlab_webhook(
         registrations: owned_header(&headers, "x-live-activity-registrations"),
         push_to_start_token: owned_header(&headers, "x-live-activity-push-to-start-token"),
         instance_id: owned_header(&headers, "x-comeet-instance-id"),
+        gitlab_instance: owned_header(&headers, "x-gitlab-instance"),
         pipeline_delivery_mode: owned_header(&headers, "x-pipeline-delivery-mode"),
     };
     match state

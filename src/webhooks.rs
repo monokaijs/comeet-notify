@@ -8,13 +8,14 @@ use tracing::{info, warn};
 use crate::{
     fcm::{FcmClient, Notification},
     live_activity::{build_start, build_update, is_terminal_status},
-    models::{GitLabWebhookEvent, PipelineEvent},
+    models::{GitLabProject, GitLabWebhookEvent, JobEvent, PipelineBuild, PipelineEvent},
     parser::parse_event,
 };
 
 const MAX_LIVE_ACTIVITY_REGISTRATIONS: usize = 8;
 const MAX_LIVE_ACTIVITY_AGE_SECONDS: i64 = 8 * 60 * 60;
 const REMOTE_START_DEDUPLICATION_SECONDS: i64 = 8 * 60 * 60;
+const PIPELINE_SNAPSHOT_TTL_SECONDS: i64 = 8 * 60 * 60;
 
 #[derive(Clone, Debug, Default)]
 pub struct LiveActivityHeaders {
@@ -23,13 +24,21 @@ pub struct LiveActivityHeaders {
     pub registrations: Option<String>,
     pub push_to_start_token: Option<String>,
     pub instance_id: Option<String>,
+    pub gitlab_instance: Option<String>,
     pub pipeline_delivery_mode: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+struct CachedPipelineSnapshot {
+    pipeline: PipelineEvent,
+    updated_at: i64,
 }
 
 #[derive(Clone)]
 pub struct WebhookProcessor {
     fcm: FcmClient,
     remotely_started_pipelines: Arc<Mutex<HashMap<String, i64>>>,
+    pipeline_snapshots: Arc<Mutex<HashMap<String, CachedPipelineSnapshot>>>,
     live_activity_token_pattern: Arc<Regex>,
 }
 
@@ -45,6 +54,7 @@ impl WebhookProcessor {
         Self {
             fcm,
             remotely_started_pipelines: Arc::new(Mutex::new(HashMap::new())),
+            pipeline_snapshots: Arc::new(Mutex::new(HashMap::new())),
             live_activity_token_pattern: Arc::new(
                 Regex::new(r"^[a-fA-F0-9]{32,512}$").expect("valid token regex"),
             ),
@@ -57,52 +67,69 @@ impl WebhookProcessor {
         fcm_token: &str,
         live_activity: &LiveActivityHeaders,
     ) -> Result<(), String> {
-        let Some(notification_data) = parse_event(payload) else {
+        let is_job_event = matches!(payload, GitLabWebhookEvent::Job(_));
+        let pipeline = self
+            .pipeline_snapshot(payload, live_activity, unix_timestamp())
+            .await;
+        let notification_data = parse_event(payload);
+        if notification_data.is_none() && !is_job_event {
             warn!(
                 object_kind = payload.object_kind(),
                 "Unsupported event type"
             );
             return Ok(());
-        };
-
-        let mut fcm_data = notification_data.deep_link_data.clone();
-        if fcm_data.get("commit_sha").is_some_and(String::is_empty) {
-            fcm_data.remove("commit_sha");
         }
-        fcm_data.insert(
-            "eventType".to_owned(),
-            notification_data.event_type.as_str().to_owned(),
-        );
-        fcm_data.insert(
-            "repositoryName".to_owned(),
-            notification_data.repository_name,
-        );
-        fcm_data.insert("repositoryUrl".to_owned(), notification_data.repository_url);
-        if let Some(instance_id) = &live_activity.instance_id {
-            fcm_data.insert("instance_id".to_owned(), instance_id.clone());
+        if is_job_event && pipeline.is_none() {
+            return Ok(());
         }
-        let notification = Notification {
-            title: notification_data.title,
-            body: notification_data.message,
-            data: fcm_data,
-        };
 
-        let pipeline = payload.pipeline();
+        let notification = notification_data.map(|notification_data| {
+            let mut fcm_data = notification_data.deep_link_data.clone();
+            if fcm_data.get("commit_sha").is_some_and(String::is_empty) {
+                fcm_data.remove("commit_sha");
+            }
+            fcm_data.insert(
+                "eventType".to_owned(),
+                notification_data.event_type.as_str().to_owned(),
+            );
+            fcm_data.insert(
+                "repositoryName".to_owned(),
+                notification_data.repository_name,
+            );
+            fcm_data.insert("repositoryUrl".to_owned(), notification_data.repository_url);
+            if let Some(instance_id) = &live_activity.instance_id {
+                fcm_data.insert("instance_id".to_owned(), instance_id.clone());
+            }
+            Notification {
+                title: notification_data.title,
+                body: notification_data.message,
+                data: fcm_data,
+            }
+        });
+
         let delivery_mode = pipeline_delivery_mode(live_activity);
-        let allows_notification =
-            pipeline.is_none() || delivery_mode != PipelineDeliveryMode::LiveActivity;
+        let allows_notification = notification.is_some()
+            && (payload.pipeline().is_none()
+                || delivery_mode != PipelineDeliveryMode::LiveActivity);
         let allows_live_activity =
             pipeline.is_some() && delivery_mode != PipelineDeliveryMode::Notification;
 
         let notification_future = async {
             if allows_notification {
-                Some(self.fcm.send_notification(fcm_token, &notification).await)
+                Some(
+                    self.fcm
+                        .send_notification(
+                            fcm_token,
+                            notification.as_ref().expect("notification is available"),
+                        )
+                        .await,
+                )
             } else {
                 None
             }
         };
         let live_activity_future = async {
-            let pipeline = pipeline?;
+            let pipeline = pipeline.as_ref()?;
             let start_key = live_activity_start_key(pipeline, fcm_token);
             let token = if allows_live_activity {
                 self.find_live_activity_token(pipeline, live_activity)
@@ -131,7 +158,8 @@ impl WebhookProcessor {
                 return Some(result);
             }
 
-            if allows_live_activity
+            if !is_job_event
+                && allows_live_activity
                 && self
                     .reserve_remote_start(pipeline, live_activity, fcm_token)
                     .await
@@ -178,6 +206,7 @@ impl WebhookProcessor {
             warn!(error = ?result.error, "Live Activity update failed");
         }
         match notification_result {
+            None if is_job_event => info!("Job Hook applied to Live Activity progress"),
             None => info!("Regular pipeline notification suppressed by delivery preference"),
             Some(result) if result.success => {
                 info!(
@@ -191,6 +220,52 @@ impl WebhookProcessor {
             ),
         }
         Ok(())
+    }
+
+    async fn pipeline_snapshot(
+        &self,
+        payload: &GitLabWebhookEvent,
+        headers: &LiveActivityHeaders,
+        now: i64,
+    ) -> Option<PipelineEvent> {
+        let mut snapshots = self.pipeline_snapshots.lock().await;
+        snapshots.retain(|_, snapshot| now - snapshot.updated_at < PIPELINE_SNAPSHOT_TTL_SECONDS);
+
+        match payload {
+            GitLabWebhookEvent::Pipeline(pipeline) => {
+                snapshots.insert(
+                    pipeline_snapshot_key(
+                        &pipeline.project,
+                        pipeline.object_attributes.id,
+                        headers.gitlab_instance.as_deref(),
+                    ),
+                    CachedPipelineSnapshot {
+                        pipeline: pipeline.clone(),
+                        updated_at: now,
+                    },
+                );
+                Some(pipeline.clone())
+            }
+            GitLabWebhookEvent::Job(job) => {
+                let key = pipeline_snapshot_key(
+                    &job.project,
+                    job.pipeline_id,
+                    headers.gitlab_instance.as_deref(),
+                );
+                let Some(snapshot) = snapshots.get_mut(&key) else {
+                    warn!(
+                        project_id = job.project.id,
+                        pipeline_id = job.pipeline_id,
+                        "Ignoring Job Hook without a cached Pipeline Hook snapshot"
+                    );
+                    return None;
+                };
+                apply_job_event(&mut snapshot.pipeline, job);
+                snapshot.updated_at = now;
+                Some(snapshot.pipeline.clone())
+            }
+            _ => None,
+        }
     }
 
     fn find_live_activity_token(
@@ -284,6 +359,53 @@ impl WebhookProcessor {
     }
 }
 
+fn pipeline_snapshot_key(
+    project: &GitLabProject,
+    pipeline_id: i64,
+    gitlab_instance: Option<&str>,
+) -> String {
+    let scope = if project.web_url.is_empty() {
+        gitlab_instance.unwrap_or("unknown-gitlab-instance")
+    } else {
+        &project.web_url
+    };
+    format!("{scope}:{}:{pipeline_id}", project.id)
+}
+
+fn apply_job_event(pipeline: &mut PipelineEvent, job: &JobEvent) {
+    pipeline
+        .object_attributes
+        .status
+        .clone_from(&job.commit.status);
+    if !job.r#ref.is_empty() {
+        pipeline.object_attributes.r#ref.clone_from(&job.r#ref);
+    }
+    if !job.build_stage.is_empty() && !pipeline.object_attributes.stages.contains(&job.build_stage)
+    {
+        pipeline
+            .object_attributes
+            .stages
+            .push(job.build_stage.clone());
+    }
+
+    let updated_build = PipelineBuild {
+        id: job.build_id,
+        name: job.build_name.clone(),
+        stage: job.build_stage.clone(),
+        status: job.build_status.clone(),
+        allow_failure: job.build_allow_failure,
+    };
+    if let Some(build) = pipeline
+        .builds
+        .iter_mut()
+        .find(|build| build.id == job.build_id)
+    {
+        *build = updated_build;
+    } else {
+        pipeline.builds.push(updated_build);
+    }
+}
+
 fn pipeline_delivery_mode(headers: &LiveActivityHeaders) -> PipelineDeliveryMode {
     match headers.pipeline_delivery_mode.as_deref() {
         Some("live_activity") => PipelineDeliveryMode::LiveActivity,
@@ -309,4 +431,52 @@ fn collapse_id(pipeline: &PipelineEvent) -> String {
 
 fn unix_timestamp() -> i64 {
     time::OffsetDateTime::now_utc().unix_timestamp()
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+
+    #[tokio::test]
+    async fn expired_pipeline_snapshots_do_not_accept_job_updates() {
+        let processor = WebhookProcessor::new(FcmClient::disabled());
+        let pipeline: GitLabWebhookEvent = serde_json::from_value(json!({
+            "object_kind": "pipeline",
+            "project": {"id": 7, "name": "Comeet", "web_url": "https://gitlab/comeet"},
+            "object_attributes": {"id": 42, "ref": "main", "status": "running", "stages": ["build"]},
+            "builds": [{"id": 1, "name": "web", "stage": "build", "status": "running"}]
+        }))
+        .unwrap();
+        let job: GitLabWebhookEvent = serde_json::from_value(json!({
+            "object_kind": "build",
+            "ref": "main",
+            "build_id": 1,
+            "build_name": "web",
+            "build_stage": "build",
+            "build_status": "success",
+            "pipeline_id": 42,
+            "project": {"id": 7, "name": "Comeet", "web_url": "https://gitlab/comeet"},
+            "commit": {"status": "running"}
+        }))
+        .unwrap();
+
+        assert!(
+            processor
+                .pipeline_snapshot(&pipeline, &LiveActivityHeaders::default(), 0)
+                .await
+                .is_some()
+        );
+        assert!(
+            processor
+                .pipeline_snapshot(
+                    &job,
+                    &LiveActivityHeaders::default(),
+                    PIPELINE_SNAPSHOT_TTL_SECONDS,
+                )
+                .await
+                .is_none()
+        );
+    }
 }

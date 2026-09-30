@@ -8,7 +8,7 @@ start, update, and end iOS Live Activities.
 ## Features
 
 - Runs entirely in your own infrastructure
-- Supports push, merge request, issue, pipeline, and tag events
+- Supports push, merge request, issue, pipeline, job, and tag events
 - Sends native Android and iOS notifications through FCM
 - Includes project and event metadata for in-app deep links
 - Updates and ends pipeline Live Activities with status snapshots and available stage details
@@ -25,6 +25,7 @@ start, update, and end iOS Live Activities.
 | Merge request events | `merge_request` | Project ID and merge request IID |
 | Issues events        | `issue`         | Project ID and issue IID         |
 | Pipeline events      | `pipeline`      | Project ID and pipeline ID       |
+| Job events           | `build`         | Live Activity progress only      |
 | Tag push events      | `tag_push`      | Project ID                       |
 
 Unsupported webhook event types are ignored without sending a notification.
@@ -101,7 +102,7 @@ In your GitLab project, open **Settings → Webhooks** and configure:
 | ---------------- | ------------------------------------------------------------------- |
 | URL              | `https://notify.example.com/webhooks/gitlab`                        |
 | Custom header    | `X-FCM-Token: <comeet-device-token>`                                |
-| Triggers         | Push, tag push, issue, merge request, and pipeline events as needed |
+| Triggers         | Push, tag push, issue, merge request, pipeline, and job events as needed |
 | SSL verification | Enabled                                                             |
 
 The `X-GitLab-Event` header is read when GitLab includes it, but event handling
@@ -119,12 +120,12 @@ Comeet stores the active pipeline registrations on the existing project webhook:
 | `X-Live-Activity-Pipeline-ID`         | Pipeline associated with the legacy token                 |
 | `X-Live-Activity-Push-To-Start-Token` | ActivityKit token used to remotely start new activities   |
 
-The relay sends a Live Activity update only for a pipeline event whose ID
-exactly matches a registration. Tokens are validated and never logged. The
-activity-scoped routing data remains on the GitLab webhook. A short-lived,
-in-memory process guard also deduplicates repeated remote-start events.
-Pipeline events must be enabled for the project's Comeet notification
-subscription or GitLab will not deliver the updates to the relay.
+The relay starts Live Activities from Pipeline Hooks, then applies matching Job
+Hooks to the cached full pipeline snapshot so job and stage progress can advance
+while the overall pipeline remains running. Job Hooks never send regular push
+notifications or start activities on their own. Tokens are validated and never
+logged. The activity-scoped routing data remains on the GitLab webhook.
+Pipeline and job events must both be enabled for accurate Live Activity updates.
 The pipeline delivery mode independently controls regular notification and
 Live Activity delivery. Missing or invalid mode headers default to `both` for
 compatibility with older Comeet clients.
@@ -224,18 +225,19 @@ docker pull ghcr.io/monokaijs/comeet-notify:latest
 
 The container runs one non-root Rust process with two Tokio worker threads, an
 internal health check, and graceful SIGTERM handling. The service does not
-require PostgreSQL, another database, or a persistent volume because all routing
-state remains on the GitLab webhook and the only server-side guard is temporary
-remote-start deduplication.
-Deployments that run multiple relay replicas must add a shared deduplication
-store before enabling remote starts. Webhook delivery is synchronous; the relay
-does not currently maintain a queue or its own retry state.
+require PostgreSQL, another database, or a persistent volume. Activity routing
+state remains on the GitLab webhook; full pipeline snapshots and remote-start
+deduplication are retained in memory for up to eight hours.
+Deployments that run multiple relay replicas must add a shared snapshot and
+deduplication store before enabling remote starts. Webhook delivery is
+synchronous; the relay does not currently maintain a queue or its own retry state.
 
 FCM notification and Live Activity delivery are best effort and do not reject an
-otherwise valid GitLab webhook. GitLab pipeline webhooks describe status changes,
-not every job transition, so remote activities contain snapshots rather than a
-job-level event stream. Active states become stale after 15 minutes without
-another pipeline event. Completed activities remain visible for 15 minutes;
+otherwise valid GitLab webhook. A Pipeline Hook seeds the full snapshot and each
+Job Hook updates its corresponding build. Job Hooks received without a cached
+Pipeline Hook are acknowledged and ignored rather than sending incomplete state.
+Active states become stale after 15 minutes without another pipeline or job
+event. Completed activities remain visible for 15 minutes;
 failures remain for one hour so the failed stage and job can be inspected.
 `manual` and `scheduled` pipelines remain active because GitLab can resume them.
 The Comeet app reconciles active activities whenever it opens or returns to the
@@ -285,7 +287,7 @@ src/
 ├── live_activity.rs  # ActivityKit pipeline state builder
 ├── models.rs         # GitLab and response models
 ├── parser.rs         # GitLab notification parser
-├── webhooks.rs       # Delivery routing and remote-start deduplication
+├── webhooks.rs       # Delivery routing, pipeline snapshots, and start deduplication
 ├── lib.rs
 └── main.rs           # Two-thread Tokio runtime and healthcheck command
 

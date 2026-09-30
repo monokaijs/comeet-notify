@@ -141,6 +141,10 @@ fn live_activity_update_end_and_start_have_activitykit_names() {
     assert_eq!(aps["event"], "update");
     assert_eq!(aps["stale-date"], 1_786_320_900_i64);
     assert_eq!(aps["content-state"]["status"], "running");
+    assert_eq!(aps["content-state"]["completedJobCount"], 0);
+    assert_eq!(aps["content-state"]["totalJobCount"], 1);
+    assert_eq!(aps["content-state"]["stages"][0]["completedJobCount"], 0);
+    assert_eq!(aps["content-state"]["stages"][0]["totalJobCount"], 1);
 
     let end = live_activity_request(
         "fcm",

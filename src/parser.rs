@@ -202,7 +202,7 @@ pub fn parse_event(payload: &GitLabWebhookEvent) -> Option<ParsedNotificationDat
                 ]),
             })
         }
-        GitLabWebhookEvent::Unknown => None,
+        GitLabWebhookEvent::Job(_) | GitLabWebhookEvent::Unknown => None,
     }
 }
 

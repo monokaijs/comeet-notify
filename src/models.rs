@@ -100,6 +100,30 @@ pub struct PipelineEvent {
 }
 
 #[derive(Clone, Debug, Deserialize)]
+pub struct JobCommit {
+    #[serde(default)]
+    pub status: String,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct JobEvent {
+    #[serde(default)]
+    pub r#ref: String,
+    pub build_id: i64,
+    #[serde(default)]
+    pub build_name: String,
+    #[serde(default)]
+    pub build_stage: String,
+    #[serde(default)]
+    pub build_status: String,
+    #[serde(default)]
+    pub build_allow_failure: bool,
+    pub pipeline_id: i64,
+    pub project: GitLabProject,
+    pub commit: JobCommit,
+}
+
+#[derive(Clone, Debug, Deserialize)]
 pub struct TagPushEvent {
     #[serde(default)]
     pub r#ref: String,
@@ -120,6 +144,8 @@ pub enum GitLabWebhookEvent {
     Issue(IssueEvent),
     #[serde(rename = "pipeline")]
     Pipeline(PipelineEvent),
+    #[serde(rename = "build")]
+    Job(JobEvent),
     #[serde(rename = "tag_push")]
     TagPush(TagPushEvent),
     #[serde(other)]
@@ -133,6 +159,7 @@ impl GitLabWebhookEvent {
             Self::MergeRequest(_) => "merge_request",
             Self::Issue(_) => "issue",
             Self::Pipeline(_) => "pipeline",
+            Self::Job(_) => "build",
             Self::TagPush(_) => "tag_push",
             Self::Unknown => "unknown",
         }
