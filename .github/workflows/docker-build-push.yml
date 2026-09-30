@@ -141,11 +141,24 @@ jobs:
           printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > ~/.ssh/known_hosts
           chmod 600 ~/.ssh/id_ed25519 ~/.ssh/known_hosts
 
+      - name: Report SSH public-key identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! fingerprint="$(ssh-keygen -y -P '' -f ~/.ssh/id_ed25519 2>/dev/null | ssh-keygen -lf - -E sha256 2>/dev/null)"; then
+            echo "::error::DEPLOY_SSH_KEY must contain a valid private key without a passphrase."
+            exit 1
+          fi
+          printf '%s\n' "$fingerprint" | awk '{printf "Deployment public key: %s %s\n", $2, $NF}'
+          stat --format='SSH key file permissions: %a' ~/.ssh/id_ed25519
+          printf 'SSH target: %s@%s:%s\n' "$DEPLOY_USER" "$DEPLOY_HOST" "$DEPLOY_PORT"
+
       - name: Deploy container
         shell: bash
         run: |
           set -euo pipefail
-          ssh -p "$DEPLOY_PORT" "$DEPLOY_USER@$DEPLOY_HOST" \
+          ssh -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
+            -i ~/.ssh/id_ed25519 -p "$DEPLOY_PORT" "$DEPLOY_USER@$DEPLOY_HOST" \
             bash -s -- "$IMAGE" "$DEPLOY_ENV_FILE" <<'REMOTE'
           set -euo pipefail
 
