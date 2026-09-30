@@ -5,14 +5,6 @@ GitLab webhook events, turns them into concise mobile notifications, and deliver
 them through Firebase Cloud Messaging (FCM). Pipeline webhooks can remotely
 start, update, and end iOS Live Activities.
 
-```mermaid
-flowchart LR
-    GitLab["GitLab project"] -->|"Webhook + device headers"| Relay["Comeet Notify"]
-    Relay -->|"FCM HTTP v1"| FCM["Firebase Cloud Messaging"]
-    FCM -->|"Push notification + deep-link data"| App["Comeet mobile app"]
-    FCM -->|"ActivityKit update / end"| Activity["iOS Live Activity"]
-```
-
 ## Features
 
 - Runs entirely in your own infrastructure
