@@ -215,8 +215,8 @@ docker run --detach \
   comeet-notify
 ```
 
-Images built from the default branch are also published to GitHub Container
-Registry:
+Images are built for `linux/amd64`. Default-branch images are published to
+GitHub Container Registry:
 
 ```bash
 docker pull ghcr.io/monokaijs/comeet-notify:latest
@@ -255,6 +255,14 @@ foreground, removes duplicates, and ends activities whose pipeline has finished.
 > The current application does not validate GitLab's webhook secret-token
 > header. Do not expose the relay directly to an untrusted network without
 > compensating controls.
+
+## Automated deployment
+
+Pushes to `master` run formatting, Clippy, and Rust tests, then build and publish
+one AMD64 image and deploy that image by its immutable digest. The Docker build
+compiles the release binary; CI does not build a separate smoke-test image.
+Production deployment uses the existing SSH key and pinned known-hosts secrets,
+checks container health, and restores the previous image if startup fails.
 
 ## Development
 
