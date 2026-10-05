@@ -1,3 +1,4 @@
+pub mod android_updates;
 pub mod app;
 pub mod config;
 pub mod fcm;

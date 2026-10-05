@@ -544,3 +544,160 @@ async fn job_hook_snapshots_are_isolated_by_gitlab_instance() {
         assert_eq!(state["totalJobCount"], 2);
     }
 }
+
+fn android_headers(expires_at: i64) -> Vec<(&'static str, String)> {
+    vec![
+        ("x-comeet-instance-id", "work".into()),
+        ("x-android-pipeline-registrations", json!([{
+            "registrationId": "a".repeat(32), "accountKey": "work:7", "pipelineId": 42, "expiresAt": expires_at
+        }]).to_string()),
+    ]
+}
+
+#[tokio::test]
+async fn explicit_android_tracking_updates_one_data_channel_with_shared_job_counts() {
+    let server = mock_server(200).await;
+    let app = app(&server);
+    let headers = android_headers(time::OffsetDateTime::now_utc().unix_timestamp() + 3600);
+    assert_eq!(
+        send(
+            app.clone(),
+            pipeline_with_parallel_jobs("running", 42),
+            &headers
+        )
+        .await,
+        StatusCode::CREATED
+    );
+    assert_eq!(
+        send(app.clone(), job(1, "success", "running", 42), &headers).await,
+        StatusCode::CREATED
+    );
+    assert_eq!(
+        send(app, job(2, "failed", "failed", 42), &headers).await,
+        StatusCode::CREATED
+    );
+    let sent = messages(&server).await;
+    assert_eq!(sent.len(), 3);
+    let mut previous = 0;
+    for message in &sent {
+        assert!(message["message"].get("notification").is_none());
+        assert!(message["message"].get("apns").is_none());
+        assert_eq!(message["message"]["token"], "fcm-token");
+        assert_eq!(message["message"]["android"]["ttl"], "60s");
+        assert_eq!(
+            message["message"]["android"]["collapse_key"],
+            "a".repeat(32)
+        );
+        let data = &message["message"]["data"];
+        assert_eq!(data["type"], "pipeline_live_update");
+        assert_eq!(data["account_key"], "work:7");
+        assert_eq!(data["project_id"], "7");
+        assert_eq!(data["pipeline_id"], "42");
+        let revision: i64 = data["revision"].as_str().unwrap().parse().unwrap();
+        assert!(revision > previous);
+        previous = revision;
+    }
+    let mid: Value =
+        serde_json::from_str(sent[1]["message"]["data"]["payload"].as_str().unwrap()).unwrap();
+    assert_eq!(mid["completedJobCount"], 1);
+    assert_eq!(mid["totalJobCount"], 2);
+    let final_state: Value =
+        serde_json::from_str(sent[2]["message"]["data"]["payload"].as_str().unwrap()).unwrap();
+    assert_eq!(final_state["status"], "failed");
+    assert_eq!(final_state["completedJobCount"], 2);
+}
+
+#[tokio::test]
+async fn expired_or_other_pipeline_tracking_preserves_regular_notification_delivery() {
+    let server = mock_server(200).await;
+    let app = app(&server);
+    assert_eq!(
+        send(app.clone(), pipeline("running", 42), &android_headers(1)).await,
+        StatusCode::CREATED
+    );
+    assert_eq!(
+        send(
+            app,
+            pipeline("running", 43),
+            &android_headers(time::OffsetDateTime::now_utc().unix_timestamp() + 3600)
+        )
+        .await,
+        StatusCode::CREATED
+    );
+    let sent = messages(&server).await;
+    assert_eq!(sent.iter().filter(is_regular).count(), 2);
+    assert!(
+        sent.iter()
+            .all(|message| message["message"]["data"]["type"] != "pipeline_live_update")
+    );
+}
+
+#[tokio::test]
+async fn android_capability_is_readable_without_mutating_subscriptions() {
+    let response = build_app(AppState::new(FcmClient::disabled()))
+        .oneshot(
+            Request::builder()
+                .uri("/capabilities")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    use http_body_util::BodyExt;
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(
+        serde_json::from_slice::<Value>(&body).unwrap()["androidPipelineUpdates"],
+        1
+    );
+}
+
+#[tokio::test]
+async fn android_terminal_send_waits_for_older_inflight_collapse_key() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/token"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!({"access_token":"token", "expires_in":3600})),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/projects/comeet-test/messages:send"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_delay(std::time::Duration::from_millis(250))
+                .set_body_json(json!({"name":"projects/comeet-test/messages/1"})),
+        )
+        .mount(&server)
+        .await;
+    let app = app(&server);
+    let headers = android_headers(time::OffsetDateTime::now_utc().unix_timestamp() + 3600);
+    let old_app = app.clone();
+    let old_headers = headers.clone();
+    let older =
+        tokio::spawn(async move { send(old_app, pipeline("running", 42), &old_headers).await });
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        while messages(&server).await.is_empty() {
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let newer = tokio::spawn(async move { send(app, pipeline("success", 42), &headers).await });
+    tokio::time::sleep(std::time::Duration::from_millis(40)).await;
+    assert_eq!(
+        messages(&server).await.len(),
+        1,
+        "Terminal must not race the inflight request with the same collapse key"
+    );
+    let (old_status, new_status) = tokio::join!(older, newer);
+    assert_eq!(old_status.unwrap(), StatusCode::CREATED);
+    assert_eq!(new_status.unwrap(), StatusCode::CREATED);
+    let sent = messages(&server).await;
+    assert_eq!(sent.len(), 2);
+    let last: Value =
+        serde_json::from_str(sent[1]["message"]["data"]["payload"].as_str().unwrap()).unwrap();
+    assert_eq!(last["status"], "success");
+}

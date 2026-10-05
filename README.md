@@ -323,3 +323,24 @@ types are intentionally acknowledged with `201` and do not send a message.
 ## License
 
 Comeet Notify is available under the [MIT License](LICENSE).
+
+## Android pipeline tracking
+
+Compatible Comeet Android clients explicitly Follow a subscribed pipeline. `GET
+/capabilities` reports `androidPipelineUpdates: 1`. The client registers up to
+four pipelines through the existing GitLab hook's
+`X-Android-Pipeline-Registrations` JSON header. Each entry contains a 32-character
+hexadecimal `registrationId`, an `accountKey` (`instance-id:user-id`), `pipelineId`
+and epoch-second `expiresAt` within eight hours. The instance prefix and pipeline
+must match the webhook. Existing FCM/GitLab authentication is reused; there is no
+new public credential or subscription endpoint.
+
+The relay reuses the existing Live Activity job aggregation and sends data-only
+FCM updates to that device, with account/project/pipeline/generation scope,
+monotonic snapshot revisions, a 60-second TTL and a per-registration collapse
+key. Sends sharing a key are serialized, preventing an old in-flight update from
+replacing a terminal snapshot. A matching Follow suppresses the additional
+ordinary pipeline notification; unrelated pipelines and iOS delivery are
+unchanged. Stop removes tracking locally immediately, and the client removes the
+header on reconnect; expired entries are ignored. Offline/Doze/force-stop
+restrictions still apply. This source change does not deploy the service.

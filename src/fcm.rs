@@ -171,6 +171,10 @@ impl FcmClient {
         self.inner.is_some()
     }
 
+    pub async fn send_android_pipeline_update(&self, request: Value) -> FcmResponse {
+        self.send(request).await
+    }
+
     pub async fn send_notification(
         &self,
         fcm_token: &str,

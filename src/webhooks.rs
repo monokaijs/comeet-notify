@@ -6,6 +6,7 @@ use tokio::sync::Mutex;
 use tracing::{info, warn};
 
 use crate::{
+    android_updates,
     fcm::{FcmClient, Notification},
     live_activity::{build_start, build_update, is_terminal_status},
     models::{GitLabProject, GitLabWebhookEvent, JobEvent, PipelineBuild, PipelineEvent},
@@ -19,6 +20,7 @@ const PIPELINE_SNAPSHOT_TTL_SECONDS: i64 = 8 * 60 * 60;
 
 #[derive(Clone, Debug, Default)]
 pub struct LiveActivityHeaders {
+    pub android_registrations: Option<String>,
     pub token: Option<String>,
     pub pipeline_id: Option<String>,
     pub registrations: Option<String>,
@@ -34,9 +36,13 @@ struct CachedPipelineSnapshot {
     updated_at: i64,
 }
 
+type AndroidDeliveryQueue = Arc<Mutex<i64>>;
+
 #[derive(Clone)]
 pub struct WebhookProcessor {
     fcm: FcmClient,
+    snapshot_revision: Arc<std::sync::atomic::AtomicI64>,
+    android_delivery_queues: Arc<Mutex<HashMap<String, (i64, AndroidDeliveryQueue)>>>,
     remotely_started_pipelines: Arc<Mutex<HashMap<String, i64>>>,
     pipeline_snapshots: Arc<Mutex<HashMap<String, CachedPipelineSnapshot>>>,
     live_activity_token_pattern: Arc<Regex>,
@@ -53,6 +59,8 @@ impl WebhookProcessor {
     pub fn new(fcm: FcmClient) -> Self {
         Self {
             fcm,
+            snapshot_revision: Arc::new(std::sync::atomic::AtomicI64::new(0)),
+            android_delivery_queues: Arc::new(Mutex::new(HashMap::new())),
             remotely_started_pipelines: Arc::new(Mutex::new(HashMap::new())),
             pipeline_snapshots: Arc::new(Mutex::new(HashMap::new())),
             live_activity_token_pattern: Arc::new(
@@ -68,9 +76,19 @@ impl WebhookProcessor {
         live_activity: &LiveActivityHeaders,
     ) -> Result<(), String> {
         let is_job_event = matches!(payload, GitLabWebhookEvent::Job(_));
-        let pipeline = self
+        let snapshot = self
             .pipeline_snapshot(payload, live_activity, unix_timestamp())
             .await;
+        let pipeline = snapshot.as_ref().map(|(pipeline, _)| pipeline);
+        let revision = snapshot.as_ref().map_or(0, |(_, revision)| *revision);
+        let android_registrations = pipeline.map_or_else(Vec::new, |pipeline| {
+            android_updates::registrations(
+                live_activity.android_registrations.as_deref(),
+                live_activity.instance_id.as_deref(),
+                pipeline.object_attributes.id,
+                unix_timestamp(),
+            )
+        });
         let notification_data = parse_event(payload);
         if notification_data.is_none() && !is_job_event {
             warn!(
@@ -108,7 +126,8 @@ impl WebhookProcessor {
         });
 
         let delivery_mode = pipeline_delivery_mode(live_activity);
-        let allows_notification = notification.is_some()
+        let allows_notification = android_registrations.is_empty()
+            && notification.is_some()
             && (payload.pipeline().is_none()
                 || delivery_mode != PipelineDeliveryMode::LiveActivity);
         let allows_live_activity =
@@ -200,8 +219,46 @@ impl WebhookProcessor {
             None
         };
 
-        let (notification_result, live_activity_result) =
-            tokio::join!(notification_future, live_activity_future);
+        let android_future = async {
+            let Some(pipeline) = pipeline else {
+                return;
+            };
+            let content = build_update(pipeline, unix_timestamp()).content_state;
+            for registration in &android_registrations {
+                // Serialize each collapse key. A delayed older request must never replace a queued terminal snapshot.
+                let queue = {
+                    let mut queues = self.android_delivery_queues.lock().await;
+                    queues.retain(|_, (expires, _)| *expires > unix_timestamp());
+                    let key = format!("{fcm_token}:{}", registration.registration_id);
+                    if queues.len() >= 4096 && !queues.contains_key(&key) {
+                        continue;
+                    }
+                    queues
+                        .entry(key)
+                        .or_insert_with(|| (registration.expires_at, Arc::new(Mutex::new(0))))
+                        .1
+                        .clone()
+                };
+                let mut sent_revision = queue.lock().await;
+                if revision <= *sent_revision || registration.expires_at <= unix_timestamp() {
+                    continue;
+                }
+                *sent_revision = revision;
+                let request = android_updates::request(
+                    fcm_token,
+                    registration,
+                    pipeline.project.id,
+                    revision,
+                    &content,
+                );
+                let result = self.fcm.send_android_pipeline_update(request).await;
+                if !result.success {
+                    warn!(error = ?result.error, "Android pipeline update failed");
+                }
+            }
+        };
+        let (notification_result, live_activity_result, ()) =
+            tokio::join!(notification_future, live_activity_future, android_future);
         if let Some(result) = live_activity_result.filter(|result| !result.success) {
             warn!(error = ?result.error, "Live Activity update failed");
         }
@@ -227,7 +284,7 @@ impl WebhookProcessor {
         payload: &GitLabWebhookEvent,
         headers: &LiveActivityHeaders,
         now: i64,
-    ) -> Option<PipelineEvent> {
+    ) -> Option<(PipelineEvent, i64)> {
         let mut snapshots = self.pipeline_snapshots.lock().await;
         snapshots.retain(|_, snapshot| now - snapshot.updated_at < PIPELINE_SNAPSHOT_TTL_SECONDS);
 
@@ -244,7 +301,7 @@ impl WebhookProcessor {
                         updated_at: now,
                     },
                 );
-                Some(pipeline.clone())
+                Some((pipeline.clone(), self.next_snapshot_revision()))
             }
             GitLabWebhookEvent::Job(job) => {
                 let key = pipeline_snapshot_key(
@@ -262,10 +319,22 @@ impl WebhookProcessor {
                 };
                 apply_job_event(&mut snapshot.pipeline, job);
                 snapshot.updated_at = now;
-                Some(snapshot.pipeline.clone())
+                Some((snapshot.pipeline.clone(), self.next_snapshot_revision()))
             }
             _ => None,
         }
+    }
+
+    fn next_snapshot_revision(&self) -> i64 {
+        use std::sync::atomic::Ordering;
+        let now = (time::OffsetDateTime::now_utc().unix_timestamp_nanos() / 1000) as i64;
+        let previous = self
+            .snapshot_revision
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |previous| {
+                Some(now.max(previous + 1))
+            })
+            .expect("revision always advances");
+        now.max(previous + 1)
     }
 
     fn find_live_activity_token(

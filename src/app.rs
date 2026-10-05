@@ -67,6 +67,10 @@ pub fn build_app(state: AppState) -> Router {
     Router::new()
         .route("/", get(root_get).post(root_post))
         .route("/webhooks/gitlab", post(handle_gitlab_webhook))
+        .route(
+            "/capabilities",
+            get(|| async { Json(serde_json::json!({"androidPipelineUpdates": 1})) }),
+        )
         .route("/docs-yaml", get(docs_yaml))
         .merge(SwaggerUi::new("/docs").url("/docs-json", openapi))
         .layer(middleware::from_fn(docs_root_compatibility))
@@ -191,6 +195,7 @@ async fn handle_gitlab_webhook(
         "Received GitLab webhook"
     );
     let live_activity = LiveActivityHeaders {
+        android_registrations: owned_header(&headers, "x-android-pipeline-registrations"),
         token: owned_header(&headers, "x-live-activity-token"),
         pipeline_id: owned_header(&headers, "x-live-activity-pipeline-id"),
         registrations: owned_header(&headers, "x-live-activity-registrations"),
