@@ -138,27 +138,46 @@ jobs:
           container="comeet-notify"
           nginx_container="comeet-nginx"
 
-          network="$(
+          mapfile -t networks < <(
             sudo -n docker inspect \
               --format '{{range $name, $_ := .NetworkSettings.Networks}}{{println $name}}{{end}}' \
-              "$nginx_container" | head -n 1
-          )"
-          if [[ -z "$network" ]]; then
-            echo "Could not determine Docker network from $nginx_container" >&2
+              "$nginx_container"
+          )
+          if (( ${#networks[@]} == 0 )); then
+            echo "Could not determine Docker networks from $nginx_container" >&2
             exit 1
           fi
 
           sudo -n docker pull "$image"
           sudo -n docker rm --force "$container" 2>/dev/null || true
+
           sudo -n docker run --detach \
             --name "$container" \
-            --network "$network" \
+            --network "${networks[0]}" \
             --restart unless-stopped \
             --env-file "$env_file" \
             --publish 127.0.0.1:3000:3000 \
             "$image"
 
-          # nginx resolves upstream hostnames when its config is loaded. The relay
-          # gets a new container IP on recreation, so reload nginx after replacing it.
+          for network in "${networks[@]:1}"; do
+            sudo -n docker network connect "$network" "$container"
+          done
+
+          # The image has a Docker healthcheck. Do not touch nginx until the relay
+          # is actually accepting traffic.
+          for _ in {1..30}; do
+            health="$(sudo -n docker inspect --format '{{.State.Health.Status}}' "$container")"
+            [[ "$health" == "healthy" ]] && break
+            [[ "$health" == "unhealthy" ]] && {
+              sudo -n docker logs --tail 100 "$container" >&2 || true
+              exit 1
+            }
+            sleep 1
+          done
+          [[ "$(sudo -n docker inspect --format '{{.State.Health.Status}}' "$container")" == "healthy" ]]
+
+          # nginx resolves upstream hostnames when config is loaded. Restart it so
+          # it resolves the replacement container, then prove the config resolves.
           sudo -n docker restart "$nginx_container"
+          sudo -n docker exec "$nginx_container" nginx -t
           REMOTE
