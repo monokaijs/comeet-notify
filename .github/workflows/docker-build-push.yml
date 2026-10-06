@@ -46,8 +46,6 @@ jobs:
   build-and-push:
     needs: verify
     runs-on: ubuntu-latest
-    outputs:
-      digest: ${{ steps.build.outputs.digest }}
     permissions:
       contents: read
       packages: write
@@ -84,7 +82,6 @@ jobs:
             org.opencontainers.image.vendor=${{ github.repository_owner }}
 
       - name: Build and push Docker image
-        id: build
         uses: docker/build-push-action@v5
         with:
           context: .
@@ -112,23 +109,9 @@ jobs:
       DEPLOY_PORT: ${{ vars.DEPLOY_PORT }}
       DEPLOY_USER: ${{ vars.DEPLOY_USER }}
       DEPLOY_ENV_FILE: ${{ vars.DEPLOY_ENV_FILE }}
-      IMAGE: ghcr.io/${{ github.repository }}@${{ needs.build-and-push.outputs.digest }}
+      IMAGE: ghcr.io/${{ github.repository }}:latest
 
     steps:
-      - name: Validate deployment configuration
-        shell: bash
-        env:
-          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
-          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
-        run: |
-          set -euo pipefail
-          [[ "$DEPLOY_HOST" =~ ^[a-zA-Z0-9._:-]+$ ]]
-          [[ "$DEPLOY_PORT" =~ ^[0-9]+$ ]]
-          [[ "$DEPLOY_USER" =~ ^[a-z_][a-z0-9_-]*$ ]]
-          [[ "$DEPLOY_ENV_FILE" =~ ^/[a-zA-Z0-9_./-]+$ ]]
-          [[ -n "$DEPLOY_SSH_KEY" ]]
-          [[ -n "$DEPLOY_KNOWN_HOSTS" ]]
-
       - name: Configure SSH
         shell: bash
         env:
@@ -141,19 +124,7 @@ jobs:
           printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > ~/.ssh/known_hosts
           chmod 600 ~/.ssh/id_ed25519 ~/.ssh/known_hosts
 
-      - name: Report SSH public-key identity
-        shell: bash
-        run: |
-          set -euo pipefail
-          if ! fingerprint="$(ssh-keygen -y -P '' -f ~/.ssh/id_ed25519 2>/dev/null | ssh-keygen -lf - -E sha256 2>/dev/null)"; then
-            echo "::error::DEPLOY_SSH_KEY must contain a valid private key without a passphrase."
-            exit 1
-          fi
-          printf '%s\n' "$fingerprint" | awk '{printf "Deployment public key: %s %s\n", $2, $NF}'
-          stat --format='SSH key file permissions: %a' ~/.ssh/id_ed25519
-          printf 'SSH target: %s@%s:%s\n' "$DEPLOY_USER" "$DEPLOY_HOST" "$DEPLOY_PORT"
-
-      - name: Deploy container
+      - name: Pull latest image and restart service
         shell: bash
         run: |
           set -euo pipefail
@@ -166,47 +137,12 @@ jobs:
           env_file="$2"
           container="comeet-notify"
 
-          if [[ ! -f "$env_file" ]]; then
-            echo "Deployment environment file not found: $env_file" >&2
-            exit 1
-          fi
-
-          previous_image="$(docker inspect --format '{{.Image}}' "$container" 2>/dev/null || true)"
           docker pull "$image"
           docker rm --force "$container" 2>/dev/null || true
-
-          start_container() {
-            docker run --detach \
-              --name "$container" \
-              --restart unless-stopped \
-              --env-file "$env_file" \
-              --publish 127.0.0.1:3000:3000 \
-              "$1"
-          }
-
-          if ! start_container "$image"; then
-            if [[ -n "$previous_image" ]]; then
-              start_container "$previous_image"
-            fi
-            exit 1
-          fi
-
-          for attempt in {1..30}; do
-            health="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$container")"
-            if [[ "$health" == "healthy" ]]; then
-              docker image prune --force >/dev/null
-              exit 0
-            fi
-            if [[ "$health" == "unhealthy" || "$health" == "none" ]]; then
-              break
-            fi
-            sleep 2
-          done
-
-          docker logs --tail 100 "$container" >&2 || true
-          docker rm --force "$container" 2>/dev/null || true
-          if [[ -n "$previous_image" ]]; then
-            start_container "$previous_image"
-          fi
-          exit 1
+          docker run --detach \
+            --name "$container" \
+            --restart unless-stopped \
+            --env-file "$env_file" \
+            --publish 127.0.0.1:3000:3000 \
+            "$image"
           REMOTE

@@ -261,10 +261,11 @@ foreground, removes duplicates, and ends activities whose pipeline has finished.
 ## Automated deployment
 
 Pushes to `master` run formatting, Clippy, and Rust tests, then build and publish
-one AMD64 image and deploy that image by its immutable digest. The Docker build
-compiles the release binary; CI does not build a separate smoke-test image.
-Production deployment uses the existing SSH key and pinned known-hosts secrets,
-checks container health, and restores the previous image if startup fails.
+one AMD64 image as `ghcr.io/monokaijs/comeet-notify:latest`. Deployment is
+intentionally thin: CI configures SSH, connects to production, pulls `latest`,
+and recreates the `comeet-notify` container with the existing environment file
+and localhost-only port mapping. There is no CI-side rollback, health polling,
+or image pruning.
 
 ## Development
 
