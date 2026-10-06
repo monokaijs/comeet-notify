@@ -137,9 +137,9 @@ jobs:
           env_file="$2"
           container="comeet-notify"
 
-          docker pull "$image"
-          docker rm --force "$container" 2>/dev/null || true
-          docker run --detach \
+          sudo -n docker pull "$image"
+          sudo -n docker rm --force "$container" 2>/dev/null || true
+          sudo -n docker run --detach \
             --name "$container" \
             --restart unless-stopped \
             --env-file "$env_file" \
