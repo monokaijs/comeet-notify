@@ -141,7 +141,7 @@ jobs:
           mapfile -t networks < <(
             sudo -n docker inspect \
               --format '{{range $name, $_ := .NetworkSettings.Networks}}{{println $name}}{{end}}' \
-              "$nginx_container"
+              "$nginx_container" | awk 'NF'
           )
           if (( ${#networks[@]} == 0 )); then
             echo "Could not determine Docker networks from $nginx_container" >&2
