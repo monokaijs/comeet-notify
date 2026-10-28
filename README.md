@@ -30,6 +30,32 @@ start, update, and end iOS Live Activities.
 
 Unsupported webhook event types are ignored without sending a notification.
 
+### Focused issue and merge request notifications
+
+Notifications identify the project and item in the title, with the actor and
+specific change in the body. For example:
+
+> **Comeet · Issue #13: Fix login**
+>
+> Mona changed status to closed
+
+Updates use GitLab's [`changes` payload](https://docs.gitlab.com/user/project/integrations/webhook_events/#changes-field)
+to summarize status, assignees, added/removed labels, title, description, milestone,
+due date, weight, and confidentiality changes. Merge request notifications also
+describe draft status, reviewers, review re-requests and submitted reviews, target
+branch changes, auto-merge, and new commits. Creation, closure, reopening, merge,
+and approval actions retain explicit notifications.
+
+Each update produces one notification with up to three change details and a count
+of additional details. Long text is shortened and description contents are never
+copied into the notification. Item identifiers and mobile deep links are preserved.
+
+Updates with no recognized meaningful change are acknowledged without sending
+a push. This includes missing/empty `changes`, timestamp/editor metadata, and
+automatic mergeability checks. A merge request update with `oldrev` still reports
+new commits even if `changes` is empty. No API lookup is needed; participant names
+come from the webhook, with user IDs as a fallback.
+
 ## Requirements
 
 - Rust 1.93 or later

@@ -136,6 +136,65 @@ fn is_live(message: &&Value) -> bool {
 }
 
 #[tokio::test]
+async fn issue_change_delivers_specific_copy_and_preserves_mobile_routing() {
+    let server = mock_server(200).await;
+    let status = send(
+        app(&server),
+        json!({
+            "object_kind": "issue", "user": {"name": "Mona"},
+            "project": {"id": 7, "name": "Comeet", "web_url": "https://gitlab/comeet"},
+            "object_attributes": {"iid": 13, "title": "Fix login", "action": "update"},
+            "changes": {"state_id": {"previous": 1, "current": 2}}
+        }),
+        &[("x-comeet-instance-id", "work".into())],
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let sent = messages(&server).await;
+    assert_eq!(sent.len(), 1);
+    let message = &sent[0]["message"];
+    assert_eq!(
+        message["notification"],
+        json!({
+            "title": "Comeet · Issue #13: Fix login", "body": "Mona changed status to closed"
+        })
+    );
+    assert_eq!(
+        message["apns"]["payload"]["aps"]["alert"],
+        message["notification"]
+    );
+    assert_eq!(
+        message["android"]["notification"]["channel_id"],
+        "gitlab_notifications"
+    );
+    assert_eq!(message["data"]["instance_id"], "work");
+    assert_eq!(message["data"]["project_id"], "7");
+    assert_eq!(message["data"]["issue_iid"], "13");
+    assert_eq!(message["data"]["eventType"], "issue");
+    assert_eq!(message["data"]["repositoryName"], "Comeet");
+}
+
+#[tokio::test]
+async fn bookkeeping_only_updates_are_acknowledged_without_contacting_firebase() {
+    let server = mock_server(200).await;
+    for kind in ["issue", "merge_request"] {
+        let status = send(
+            app(&server),
+            json!({
+                "object_kind": kind, "user": {"name": "Mona"},
+                "project": {"id": 7, "name": "Comeet", "web_url": "https://gitlab/comeet"},
+                "object_attributes": {"iid": 13, "title": "Fix login", "action": "update"},
+                "changes": {"updated_at": {"previous": "yesterday", "current": "today"}}
+            }),
+            &[],
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED);
+    }
+    assert!(server.received_requests().await.unwrap().is_empty());
+}
+
+#[tokio::test]
 async fn matching_legacy_token_sends_both_channels_with_instance_data() {
     let server = mock_server(200).await;
     let status = send(

@@ -91,9 +91,9 @@ impl WebhookProcessor {
         });
         let notification_data = parse_event(payload);
         if notification_data.is_none() && !is_job_event {
-            warn!(
+            info!(
                 object_kind = payload.object_kind(),
-                "Unsupported event type"
+                "Event has no notification content"
             );
             return Ok(());
         }

@@ -14,7 +14,11 @@ pub struct GitLabProject {
 #[derive(Clone, Debug, Deserialize)]
 pub struct GitLabUser {
     #[serde(default)]
+    pub id: Option<i64>,
+    #[serde(default)]
     pub name: String,
+    #[serde(default)]
+    pub username: String,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -42,6 +46,10 @@ pub struct MergeRequestAttributes {
     pub iid: i64,
     #[serde(default)]
     pub action: String,
+    #[serde(default)]
+    pub oldrev: Option<String>,
+    #[serde(default)]
+    pub system: bool,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -49,6 +57,12 @@ pub struct MergeRequestEvent {
     pub user: GitLabUser,
     pub project: GitLabProject,
     pub object_attributes: MergeRequestAttributes,
+    #[serde(default)]
+    pub changes: Value,
+    #[serde(default)]
+    pub assignees: Option<Vec<GitLabUser>>,
+    #[serde(default)]
+    pub reviewers: Option<Vec<GitLabUser>>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -65,6 +79,10 @@ pub struct IssueEvent {
     pub user: GitLabUser,
     pub project: GitLabProject,
     pub object_attributes: IssueAttributes,
+    #[serde(default)]
+    pub changes: Value,
+    #[serde(default)]
+    pub assignees: Option<Vec<GitLabUser>>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
